@@ -15,7 +15,7 @@ the plugin to emit that exact structure. Reference frames live on the Figma dev 
 
 Each dimension is an auto-layout `FrameNode` (transparent, `clipsContent = false`).
 
-**Horizontal** — root is a VERTICAL stack, `counterAxisAlignItems = CENTER`, `paddingBottom = PAD_BOTTOM`:
+**Horizontal** — root is a VERTICAL stack, `counterAxisAlignItems = CENTER`, feature-side `paddingBottom = witnessGap` (see `featurePad`):
 
 | child | role | H-sizing | V-sizing | notes |
 |---|---|---|---|---|
@@ -24,7 +24,7 @@ Each dimension is an auto-layout `FrameNode` (transparent, `clipsContent = false
 | `Dim` (vector) | `line` | FILL | (0) | open path, arrow `strokeCap` both ends |
 | `Extension` (frame) | `extension` | FILL | FILL (grows) | inside witness lines; grows to reach the feature |
 
-**Vertical** — root is a HORIZONTAL row, `counterAxisAlignItems = CENTER`:
+**Vertical** — root is a HORIZONTAL row, `counterAxisAlignItems = CENTER`, feature-side `paddingLeft = witnessGap` (see `featurePad`):
 
 | child | role | H-sizing | V-sizing | notes |
 |---|---|---|---|---|
@@ -40,6 +40,81 @@ axis and FILLs the band's cross axis (its length).
 **Measured span** is still `frame.width` (H) / `frame.height` (V) — the Dim line and the
 witness endpoints span 0..width, so the frame dimension *is* the measured length. Recalc
 and live-update read it exactly as in v1.
+
+---
+
+## Variants: `flip` and `labelStyle` (v2.1)
+
+Two independent modifiers layer on top of `orient`, all from one builder
+(`buildDimension` → `assembleStandard` / `assembleInline`). 8 combos total.
+
+### `flip` (mirror) — reverse the stack
+
+The standard stacks above have a natural side (H: label **above**, V: label on the
+**right**). `flip` mirrors it. Because each child's Fill/Hug sizing depends only on
+`orient` + role — **not** on position — the flip is literally *reverse the child append
+order*, plus two touch-ups:
+
+- **Label spill** flips: H uses `counterAxisAlignItems = flip ? MAX : MIN` (spill up vs
+  down); V uses `primaryAxisAlignItems = flip ? MIN : MAX` (spill right vs left). The
+  label always spills **toward** the line.
+- **Feature-side padding** (`featurePad`, = `witnessGap`) follows the growing band's edge:
+  H `paddingBottom` → `paddingTop` when flipped; V `paddingLeft` → `paddingRight` when
+  flipped. This is the single source of the witness-to-feature standoff on **every** variant.
+
+`assembleStandard` builds each child as a role-keyed closure (`steps.text/outside/line/
+inside`) and runs them in `flip ? reversed : natural` order. Root resize is
+flip-independent (total size is order-agnostic) and adds `witnessGap` on the measured-axis'
+counter (H height, V width) to make room for the standoff.
+
+> **`witnessGap` wiring (v2.1).** Originally only H had a feature standoff, via a hardcoded
+> `PAD_BOTTOM = 4`; V had none. `featurePad` now applies the `witnessGap` setting on all four
+> orient×flip cases, so V finally gets its standoff and the value is user-tunable everywhere.
+
+Reference frames: `Dimension (H) - Above` (natural) and `Dimension (H) - Below` (flip).
+
+### `labelStyle: 'inline'` — the label breaks the line
+
+The middle band becomes a row/column
+`[witness ‖ segA → · Text · ← segB ‖ witness]` (`assembleInline`):
+
+| child | role | length-axis | cross-axis | notes |
+|---|---|---|---|---|
+| `witness` ×2 | `witness` | FIXED (0) | FILL | crossing witness at each extremity — keeps the witness line continuous **through** the band |
+| `segA` / `segB` | `line` | FILL | (0) | the two dim-line pieces; arrow on the **outer** end only |
+| `Text` (frame) | `text` | HUG | HUG | centered on the line, `gap` padding on the near sides so the segments don't touch the glyphs |
+
+Around this band sit the same **fixed outside-overshoot stub** and **growing inside band**
+as standard. Their order is **orientation-specific** (like `assembleStandard`): H natural =
+`[stub, band, inside]` (feature bottom); V natural = `[inside, band, stub]` (feature left);
+`flip` reverses each. (An earlier cut shared one order array across both orients, which put
+the V-inline feature on the wrong side — fixed.)
+
+**Outer-end-only arrows.** A segment can't use node-level `strokeCap` (that caps *both*
+ends → an arrow pointing at the text). Instead `inlineSegment` builds a two-vertex
+`setVectorNetworkAsync` network and sets **per-vertex `strokeCap`**: the arrow style on the
+outer vertex, `NONE` on the inner. `capOnStart` selects which vertex (segA=left/top outer,
+segB=right/bottom outer). **Runtime-confirmed** by prototyping this exact band in the dev
+file via `use_figma`: after FILL-stretch the two segments split to 101.5px each (matching
+Jon's reference), the arrows land on the outer ends, and the inner ends stay clean.
+
+**Overshoot bookkeeping.** The inline band's near half already provides part of the
+overshoot, so the stub is `max(witnessOvershoot - textCross/2, 1)` to keep total overshoot
+past the line ≈ `witnessOvershoot` (matches Jon's hand-built stub of ~2px).
+
+**Settle (gotcha #2) applies to the inline band too** — it's a nested Fill frame, so after
+the tree is assembled it gets the same resize-then-refill treatment (`FILL` on the length
+axis, `HUG` on the cross axis) as the extension bands.
+
+Reference frame: `Dimension (H) - Inline`. (V-inline is the symmetric extrapolation —
+vertical band, horizontal crossing witnesses, upright centered label — not drawn in the
+doc but built by the same code path.)
+
+> **Runtime status:** the one genuinely new primitive — **per-vertex `strokeCap` under
+> Fill-stretch** — is runtime-confirmed via a `use_figma` prototype (outer-end arrows,
+> clean inner ends, even 101.5px split). `flip` and the surrounding inline assembly reuse
+> the already-verified sizing machinery. Still worth an end-to-end eyeball of all 8 combos
+> dropped from the actual plugin (esp. V-inline, which is the symmetric extrapolation).
 
 ---
 

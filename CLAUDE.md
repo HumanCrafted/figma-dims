@@ -3,11 +3,19 @@
 Context for any session picking this up. Read this first; it captures the design
 decisions and the dead ends we already ruled out, so we don't re-litigate them.
 
-**Status:** **v2 — runtime-verified in Figma.** Both orientations build, stretch, and
-recompute correctly. Architecture moved from per-child *constraints* (v1) to
-**auto-layout Fill/Hug/Fixed** (v2) — see [docs/auto-layout.md](docs/auto-layout.md) for
-the full node tree and the three hard-won gotchas. Arrow mappings and both label-tighten
-heuristics are runtime-confirmed.
+**Status:** **v2 — runtime-verified in Figma; v2.1 variants pending Figma check.** Both
+orientations build, stretch, and recompute correctly. Architecture moved from per-child
+*constraints* (v1) to **auto-layout Fill/Hug/Fixed** (v2) — see
+[docs/auto-layout.md](docs/auto-layout.md) for the full node tree and the three hard-won
+gotchas. Arrow mappings and both label-tighten heuristics are runtime-confirmed.
+
+**v2.1** adds two orthogonal style modifiers on top of `orient`: **`flip`** (mirror — H
+above↔below, V right↔left) and **`labelStyle: standard|inline`** (inline = the label breaks
+the line, arrows on the outer ends only). One builder, 8 combos. Details in the
+[variants section](docs/auto-layout.md#variants-flip-and-labelstyle-v21). The one new
+primitive — per-vertex `strokeCap` on inline segments under Fill-stretch — is
+**runtime-confirmed** via a `use_figma` prototype (outer-end arrows, clean inner ends, even
+101.5px split). Full 8-combo drop from the plugin still wants an end-to-end eyeball.
 
 ---
 
@@ -100,13 +108,18 @@ namespace (Human Crafted):
 ```
 hcd:isDimension   "1"        (on the frame)
 hcd:orientation   "H" | "V"  (on the frame)
+hcd:labelStyle    "standard" | "inline"  (on the frame)
+hcd:flip          "1"|"0" — mirrored to the far side  (on the frame)
 hcd:dpi           px per inch (Figma baseline 72)  (on the frame)
 hcd:unit          "in" | "ft" | "mm" | "cm" | "m"  (on the frame)
 hcd:scale         float — drawing scale, value ÷= scale  (on the frame)
 hcd:decimals      int        (on the frame)
 hcd:showUnit      "1"|"0"    (on the frame)
-hcd:role          "line" | "witness" | "label" | "extension" | "text"  (on children)
+hcd:role          "line" | "witness" | "label" | "extension" | "text" | "inline"  (on children)
 ```
+
+`labelStyle`/`flip` are stored for self-description; recalc doesn't need them (measured span
+is still `frame.width`/`height` in every variant, so the label math is variant-agnostic).
 
 Because each dimension carries its own dpi/unit, **old dimensions keep their original
 units even after the global defaults change** (toggling the unit in the panel only
@@ -146,8 +159,9 @@ manifest.json   editorType: figma, documentAccess: dynamic-page,
                 networkAccess none, main: code.js, ui: ui.html.
                 id is a placeholder — fine for local dev, only matters at publish.
 code.ts         all plugin logic. Compiles to code.js (which Figma actually runs).
-ui.html         control panel: Horizontal/Vertical drop buttons, option fields,
-                live toggle, Recalculate button. postMessage <-> code.
+ui.html         control panel: a 4x2 Variant grid (8 SVG-icon drop buttons, one per
+                orient x labelStyle x flip combo), option fields, live toggle,
+                Recalculate button. postMessage <-> code.
 tsconfig.json   compiles code.ts. strict: true (flip to false as an escape hatch).
                 lib must NOT include DOM (collides with @figma/plugin-typings'
                 console/fetch globals — TS2451). See docs/auto-layout.md.
@@ -178,19 +192,30 @@ compile. Runtime errors surface in Plugins → Development → Show/Hide console
   `FONT` if the family can't be resolved or `loadFontAsync` throws. Family list comes
   from `figma.listAvailableFontsAsync()` (cached in `availableFonts`, sent to the UI on
   init so the dropdown only offers loadable fonts).
-- `LEN` = 240 (default measured span), `INSIDE` = 40 (default inside-band reach, grows),
-  `PAD_BOTTOM` = 4 (H bottom padding).
+- `LEN` = 240 (default measured span), `INSIDE` = 40 (default inside-band reach, grows).
+  The feature-side standoff is `witnessGap` (a setting), applied via `featurePad()` as
+  padding between the growing inside band and the frame edge — H bottom/top, V left/right,
+  following orient + flip.
 - `TEXT_TIGHTEN_H` = 0.7 (H label wrapper height as a fraction of font size — text spills
   down toward the line), `TEXT_TIGHTEN_V` = 0.4 (V: wrapper narrower than the text by this
   fraction — text spills left toward the line). Both are runtime-confirmed to look right;
   simple font-relative heuristics, tunable if the look should change.
-- `Settings`: `thickness`, `arrowStyle`, `fontFamily`, `fontSize`, `witnessGap`,
-  `witnessOvershoot`, `dpi`, `unit`, `scale`, `decimals`, `showUnit`, `live`. Units use a
-  DPI field + unit toggle (in/ft/mm/cm/m) via `PER_INCH`; `scale` is a text field that
-  parses decimals, whole numbers, or fractions (`1/4`).
+- `Settings`: `thickness`, `arrowStyle`, `labelStyle`, `flip`, `fontFamily`, `fontSize`,
+  `witnessGap`, `witnessOvershoot`, `dpi`, `unit`, `scale`, `decimals`, `showUnit`, `live`.
+  Units use a DPI field + unit toggle (in/ft/mm/cm/m) via `PER_INCH`; `scale` is a text
+  field that parses decimals, whole numbers, or fractions (`1/4`). `labelStyle` + `flip` are
+  **not** editable fields — each of the 8 Variant-grid buttons carries its own `orient` +
+  `labelStyle` + `flip`, sent with the `create` message; code folds them into `settings`
+  (so they persist and land in pluginData) just before building. `witnessGap` drives
+  `featurePad()` — the standoff between the witness line and the feature — on every variant
+  (H and V, standard and inline).
 
 ## Open threads / next candidates
 
+- **Verify v2.1 variants end-to-end in Figma** — drop all 8 combos (H/V × standard/inline
+  × flip) from the plugin and resize each. The per-vertex arrow-cap primitive is already
+  confirmed; what's left to eyeball is the full assembly, especially **V-inline** (the
+  symmetric extrapolation not drawn in the reference). Then mark the Status line verified.
 - **Rounded extension ends** — currently Line-style only; other styles may want it.
 - **Color control** — currently the `COLOR` constant; promote to the UI. (Jon flagged
   this as the likely next add.)

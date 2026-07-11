@@ -33,6 +33,8 @@ const NS = 'hcd';
 const K = {
   isDim: `${NS}:isDimension`,
   orient: `${NS}:orientation`,
+  labelStyle: `${NS}:labelStyle`,
+  flip: `${NS}:flip`,
   dpi: `${NS}:dpi`,
   unit: `${NS}:unit`,
   scale: `${NS}:scale`,
@@ -40,6 +42,8 @@ const K = {
   showUnit: `${NS}:showUnit`,
   role: `${NS}:role`,
 };
+
+type LabelStyle = 'standard' | 'inline';
 
 const FONT: FontName = { family: 'Inter', style: 'Regular' };
 const COLOR: RGB = { r: 0.11, g: 0.11, b: 0.12 };
@@ -63,11 +67,12 @@ const TEXT_TIGHTEN_V = 0.4; // V: wrapper narrower than text by fontSize * this 
 
 const LEN = 240;   // default measured span (the value tracks this)
 const INSIDE = 40; // default inside-extension reach (grows on resize)
-const PAD_BOTTOM = 4; // H: bottom padding under the inside band (matches reference)
 
 interface Settings {
   thickness: number;        // px stroke weight of the dimension line -> also drives arrow size
   arrowStyle: StrokeCap;    // native stroke cap enum value
+  labelStyle: LabelStyle;   // 'standard' (offset from line) | 'inline' (breaks the line)
+  flip: boolean;            // mirror the stack: H text above->below, V text right->left
   witnessGap: number;       // px standoff from the feature before the witness line begins
   witnessOvershoot: number; // px the witness line extends past the dimension line
   dpi: number;              // pixels per inch (Figma baseline = 72)
@@ -83,6 +88,8 @@ interface Settings {
 const DEFAULTS: Settings = {
   thickness: 1.5,
   arrowStyle: 'ARROW_EQUILATERAL',
+  labelStyle: 'standard',
+  flip: false,
   witnessGap: 4,
   witnessOvershoot: 8,
   dpi: 72,
@@ -136,6 +143,30 @@ function witnessBar(orient: 'H' | 'V', thickness: number, roundEnds: boolean): V
   // Round the extension-line ends to match Figma's Line-arrow look (Line style only).
   v.strokeCap = roundEnds ? 'ROUND' : 'NONE';
   v.setPluginData(K.role, 'witness');
+  return v;
+}
+
+/**
+ * A single segment of an INLINE dimension line — the piece of the dim line on one
+ * side of the label. Built as a two-vertex vectorNetwork so the arrow strokeCap can be
+ * placed on the OUTER vertex ONLY (the inner end, by the text, stays clean). The node
+ * fills its band's length axis, stretching to reach the frame extremity where the arrow
+ * sits.  capOnStart true -> arrow on the x0/y0 vertex; false -> on the far vertex.
+ */
+async function inlineSegment(orient: 'H' | 'V', thickness: number, cap: StrokeCap, capOnStart: boolean): Promise<VectorNode> {
+  const v = figma.createVector();
+  const far = orient === 'H' ? { x: LEN / 2, y: 0 } : { x: 0, y: LEN / 2 };
+  await v.setVectorNetworkAsync({
+    vertices: [
+      { x: 0, y: 0, strokeCap: capOnStart ? cap : 'NONE' },
+      { x: far.x, y: far.y, strokeCap: capOnStart ? 'NONE' : cap },
+    ],
+    segments: [{ start: 0, end: 1 }],
+  });
+  v.fills = [];
+  v.strokes = [{ type: 'SOLID', color: COLOR }];
+  v.strokeWeight = thickness;
+  v.setPluginData(K.role, 'line');
   return v;
 }
 
@@ -235,14 +266,17 @@ async function buildDimension(orient: 'H' | 'V') {
     font = FONT; // family vanished / not loadable -> fall back to Inter
     await figma.loadFontAsync(FONT);
   }
+  const inline = s.labelStyle === 'inline';
   const root = figma.createFrame();
-  root.name = `Dimension (${orient})`;
+  root.name = `Dimension (${orient})${inline ? ' - Inline' : ''}${s.flip ? ' - Flip' : ''}`;
   root.fills = [];
   root.clipsContent = false;
   root.itemSpacing = 0;
   root.paddingTop = root.paddingBottom = root.paddingLeft = root.paddingRight = 0;
   root.setPluginData(K.isDim, '1');
   root.setPluginData(K.orient, orient);
+  root.setPluginData(K.labelStyle, s.labelStyle);
+  root.setPluginData(K.flip, s.flip ? '1' : '0');
   root.setPluginData(K.dpi, String(s.dpi));
   root.setPluginData(K.unit, s.unit);
   root.setPluginData(K.scale, String(s.scale));
@@ -257,6 +291,52 @@ async function buildDimension(orient: 'H' | 'V') {
   label.setPluginData(K.role, 'label');
   label.characters = fmtFrom(root, LEN); // root pluginData already set
 
+  // Root is a fixed-size auto-layout box the user resizes freely; children Fill it.
+  root.layoutMode = orient === 'H' ? 'VERTICAL' : 'HORIZONTAL';
+  root.counterAxisAlignItems = 'CENTER';
+  root.primaryAxisSizingMode = 'FIXED';
+  root.counterAxisSizingMode = 'FIXED';
+
+  if (inline) await assembleInline(root, orient, s.flip, s, label);
+  else assembleStandard(root, orient, s.flip, s, label);
+
+  root.x = Math.round(figma.viewport.center.x - root.width / 2);
+  root.y = Math.round(figma.viewport.center.y - root.height / 2);
+  figma.currentPage.selection = [root];
+}
+
+/**
+ * Apply the witness gap: padding between the growing inside band and the frame edge on the
+ * FEATURE side, so the witness line stops `gap` px short of the feature it points at.
+ * Feature side follows orient + flip: H -> bottom (top when flipped); V -> left (right when
+ * flipped) — matching the inside (growing) band's position in each variant's child order.
+ */
+function featurePad(root: FrameNode, orient: 'H' | 'V', flip: boolean, gap: number) {
+  if (orient === 'H') {
+    if (flip) root.paddingTop = gap;
+    else root.paddingBottom = gap;
+  } else {
+    if (flip) root.paddingRight = gap;
+    else root.paddingLeft = gap;
+  }
+}
+
+/**
+ * Standard dimension: the label sits OFFSET from the line (above/right by default). The
+ * stack is [Text · Extension Outside · Dim · Extension Inside(grows)]; `flip` reverses it
+ * so the label lands on the opposite side (H below, V left) and the label's spill flips
+ * to keep it tightened toward the line.
+ *
+ * The per-child sizing (resize-then-Fill discipline, gotchas #1/#2) is identical whatever
+ * the child order, so each child's build+size is a closure keyed by role and run in the
+ * order the orientation + flip dictate.
+ */
+function assembleStandard(root: FrameNode, orient: 'H' | 'V', flip: boolean, s: Settings, label: TextNode) {
+  const roundEnds = s.arrowStyle === 'ARROW_LINES';
+  const line = dimLine(orient, LEN, s.thickness, s.arrowStyle);
+  const outside = extensionBand(orient, s.thickness, roundEnds);
+  const inside = extensionBand(orient, s.thickness, roundEnds);
+
   const textWrap = figma.createFrame();
   textWrap.name = 'Text';
   textWrap.fills = [];
@@ -265,79 +345,200 @@ async function buildDimension(orient: 'H' | 'V') {
   textWrap.layoutMode = 'HORIZONTAL';
   textWrap.setPluginData(K.role, 'text');
 
-  // Line-arrow style gets rounded extension-line ends to match Figma's native look.
-  const roundEnds = s.arrowStyle === 'ARROW_LINES';
-  const line = dimLine(orient, LEN, s.thickness, s.arrowStyle);
-  const outside = extensionBand(orient, s.thickness, roundEnds);
-  const inside = extensionBand(orient, s.thickness, roundEnds);
+  const steps: Record<string, () => void> = {};
 
-  // Root is a fixed-size auto-layout box the user resizes freely; children Fill it.
-  root.layoutMode = orient === 'H' ? 'VERTICAL' : 'HORIZONTAL';
-  root.counterAxisAlignItems = 'CENTER';
-  root.primaryAxisSizingMode = 'FIXED';
-  root.counterAxisSizingMode = 'FIXED';
-
-  // IMPORTANT: resize() forces BOTH axes back to Fixed sizing, so any Fill/Hug must
-  // be applied AFTER the last resize() on a node — otherwise it's silently clobbered
-  // (which pinned the extension bands to 0px). Order below is always resize-then-Fill.
   if (orient === 'H') {
-    root.paddingBottom = PAD_BOTTOM;
-    root.resize(LEN, Math.round(s.fontSize * TEXT_TIGHTEN_H) + s.witnessOvershoot + INSIDE + PAD_BOTTOM);
+    featurePad(root, 'H', flip, s.witnessGap);
+    root.resize(LEN, Math.round(s.fontSize * TEXT_TIGHTEN_H) + s.witnessOvershoot + INSIDE + s.witnessGap);
 
-    // Text wrapper: hug width, fixed SHORT height -> text top-aligns and spills down.
-    textWrap.counterAxisAlignItems = 'MIN';
-    textWrap.primaryAxisAlignItems = 'CENTER';
-    textWrap.appendChild(label);
-    root.appendChild(textWrap);
-    textWrap.resize(Math.max(textWrap.width, 1), Math.max(Math.round(s.fontSize * TEXT_TIGHTEN_H), 1));
-    textWrap.layoutSizingHorizontal = 'HUG'; // last: re-hug width, keep fixed height
-
-    root.appendChild(outside);
-    outside.resize(Math.max(outside.width, 1), Math.max(s.witnessOvershoot, 0.01));
-    outside.layoutSizingHorizontal = 'FILL'; // last: fill width, keep fixed height
-    fillBars(outside, 'H');
-
-    root.appendChild(line);
-    line.layoutSizingHorizontal = 'FILL';
-
-    root.appendChild(inside);
-    inside.layoutSizingHorizontal = 'FILL';
-    inside.layoutSizingVertical = 'FILL'; // grows -> reaches the feature
-    fillBars(inside, 'H');
+    steps.text = () => {
+      // Hug width, fixed SHORT height -> text aligns to the line side and spills toward it.
+      textWrap.counterAxisAlignItems = flip ? 'MAX' : 'MIN';
+      textWrap.primaryAxisAlignItems = 'CENTER';
+      textWrap.appendChild(label);
+      root.appendChild(textWrap);
+      textWrap.resize(Math.max(textWrap.width, 1), Math.max(Math.round(s.fontSize * TEXT_TIGHTEN_H), 1));
+      textWrap.layoutSizingHorizontal = 'HUG'; // last: re-hug width, keep fixed height
+    };
+    steps.outside = () => {
+      root.appendChild(outside);
+      outside.resize(Math.max(outside.width, 1), Math.max(s.witnessOvershoot, 0.01));
+      outside.layoutSizingHorizontal = 'FILL';
+      fillBars(outside, 'H');
+    };
+    steps.line = () => {
+      root.appendChild(line);
+      line.layoutSizingHorizontal = 'FILL';
+    };
+    steps.inside = () => {
+      root.appendChild(inside);
+      inside.layoutSizingHorizontal = 'FILL';
+      inside.layoutSizingVertical = 'FILL'; // grows -> reaches the feature
+      fillBars(inside, 'H');
+    };
+    const order = flip ? ['inside', 'line', 'outside', 'text'] : ['text', 'outside', 'line', 'inside'];
+    order.forEach((k) => steps[k]());
   } else {
-    root.resize(INSIDE + s.witnessOvershoot + Math.max(label.width, 1), LEN);
+    featurePad(root, 'V', flip, s.witnessGap);
+    root.resize(INSIDE + s.witnessOvershoot + Math.max(label.width, 1) + s.witnessGap, LEN);
 
-    root.appendChild(inside);
-    inside.layoutSizingHorizontal = 'FILL'; // grows -> reaches the feature
-    inside.layoutSizingVertical = 'FILL';
-    fillBars(inside, 'V');
-
-    root.appendChild(line);
-    line.layoutSizingVertical = 'FILL';
-
-    root.appendChild(outside);
-    outside.resize(Math.max(s.witnessOvershoot, 0.01), Math.max(outside.height, 1));
-    outside.layoutSizingVertical = 'FILL'; // last: fill height, keep fixed width
-    fillBars(outside, 'V');
-
-    // Text wrapper: upright, hug height, fixed width NARROWER than the text and
-    // right-aligned, so the text spills left toward the line.
-    textWrap.counterAxisAlignItems = 'CENTER';
-    textWrap.primaryAxisAlignItems = 'MAX';
-    textWrap.appendChild(label);
-    root.appendChild(textWrap);
-    textWrap.resize(Math.max(label.width - Math.round(s.fontSize * TEXT_TIGHTEN_V), 1), Math.max(textWrap.height, 1));
-    textWrap.layoutSizingVertical = 'HUG'; // last: re-hug height, keep fixed width
+    steps.inside = () => {
+      root.appendChild(inside);
+      inside.layoutSizingHorizontal = 'FILL'; // grows -> reaches the feature
+      inside.layoutSizingVertical = 'FILL';
+      fillBars(inside, 'V');
+    };
+    steps.line = () => {
+      root.appendChild(line);
+      line.layoutSizingVertical = 'FILL';
+    };
+    steps.outside = () => {
+      root.appendChild(outside);
+      outside.resize(Math.max(s.witnessOvershoot, 0.01), Math.max(outside.height, 1));
+      outside.layoutSizingVertical = 'FILL';
+      fillBars(outside, 'V');
+    };
+    steps.text = () => {
+      // Upright, hug height, fixed width NARROWER than the text so it spills toward the line.
+      textWrap.counterAxisAlignItems = 'CENTER';
+      textWrap.primaryAxisAlignItems = flip ? 'MIN' : 'MAX';
+      textWrap.appendChild(label);
+      root.appendChild(textWrap);
+      textWrap.resize(Math.max(label.width - Math.round(s.fontSize * TEXT_TIGHTEN_V), 1), Math.max(textWrap.height, 1));
+      textWrap.layoutSizingVertical = 'HUG'; // last: re-hug height, keep fixed width
+    };
+    const order = flip ? ['text', 'outside', 'line', 'inside'] : ['inside', 'line', 'outside', 'text'];
+    order.forEach((k) => steps[k]());
   }
 
   // Settle pass: the whole tree now exists, so re-apply Fill to the bands to clear the
   // stale 0-size on their stretch axis (see settleBand). Must be after all appends.
   settleBand(outside, orient, false, s.witnessOvershoot);
   settleBand(inside, orient, true, s.witnessOvershoot);
+}
 
-  root.x = Math.round(figma.viewport.center.x - root.width / 2);
-  root.y = Math.round(figma.viewport.center.y - root.height / 2);
-  figma.currentPage.selection = [root];
+/**
+ * Inline dimension: the label BREAKS the line. The middle band is a row/column of
+ * [witness ‖ segment -> · Text · <- segment ‖ witness]: two dim-line segments whose OUTER
+ * ends carry the arrows (inner ends clean), the label centered between them, and a witness
+ * vector at each extremity so the witness line stays continuous straight through the band.
+ * Around it, the same fixed outside-overshoot stub and growing inside band as standard.
+ * `flip` puts the feature (growing band) on the opposite side.
+ */
+async function assembleInline(root: FrameNode, orient: 'H' | 'V', flip: boolean, s: Settings, label: TextNode) {
+  const roundEnds = s.arrowStyle === 'ARROW_LINES';
+  const gap = Math.max(3, Math.round(s.fontSize * 0.35)); // clear space between line ends and text
+  const textH = Math.max(label.height, 1);
+  const textW = Math.max(label.width, 1);
+  // The band's near half already provides part of the overshoot; the stub tops it up so the
+  // total overshoot past the line stays ~= witnessOvershoot (consistent with the standard).
+  const stub = Math.max(s.witnessOvershoot - (orient === 'H' ? textH : textW) / 2, 1);
+
+  const textWrap = figma.createFrame();
+  textWrap.name = 'Text';
+  textWrap.fills = [];
+  textWrap.clipsContent = false;
+  textWrap.itemSpacing = 0;
+  textWrap.layoutMode = 'HORIZONTAL';
+  textWrap.primaryAxisAlignItems = 'CENTER';
+  textWrap.counterAxisAlignItems = 'CENTER';
+  textWrap.setPluginData(K.role, 'text');
+  textWrap.appendChild(label);
+
+  const band = figma.createFrame();
+  band.name = 'Inline';
+  band.fills = [];
+  band.clipsContent = false;
+  band.itemSpacing = 0;
+  band.layoutMode = orient === 'H' ? 'HORIZONTAL' : 'VERTICAL';
+  band.primaryAxisAlignItems = 'CENTER';
+  band.counterAxisAlignItems = 'CENTER';
+  band.setPluginData(K.role, 'inline');
+
+  const wA = witnessBar(orient, s.thickness, roundEnds); // crossing witness at the start extremity
+  const wB = witnessBar(orient, s.thickness, roundEnds); // ...and the end extremity
+  const segA = await inlineSegment(orient, s.thickness, s.arrowStyle, true); // arrow on the outer (start) end
+  const segB = await inlineSegment(orient, s.thickness, s.arrowStyle, false); // arrow on the outer (end) end
+  band.appendChild(wA);
+  band.appendChild(segA);
+  band.appendChild(textWrap);
+  band.appendChild(segB);
+  band.appendChild(wB);
+
+  const outside = extensionBand(orient, s.thickness, roundEnds);
+  const inside = extensionBand(orient, s.thickness, roundEnds);
+
+  if (orient === 'H') {
+    textWrap.paddingLeft = textWrap.paddingRight = gap;
+    featurePad(root, 'H', flip, s.witnessGap);
+    root.resize(LEN, stub + textH + INSIDE + s.witnessGap);
+  } else {
+    textWrap.paddingTop = textWrap.paddingBottom = gap;
+    featurePad(root, 'V', flip, s.witnessGap);
+    root.resize(stub + textW + INSIDE + s.witnessGap, LEN);
+  }
+
+  // Feature (growing inside band) side must match standard: H feature bottom / V feature
+  // left when not flipped. The natural order differs by orientation (see assembleStandard).
+  const order =
+    orient === 'H'
+      ? flip ? [inside, band, outside] : [outside, band, inside]
+      : flip ? [outside, band, inside] : [inside, band, outside];
+  order.forEach((n) => root.appendChild(n));
+
+  if (orient === 'H') {
+    outside.resize(Math.max(outside.width, 1), Math.max(stub, 0.01));
+    outside.layoutSizingHorizontal = 'FILL';
+    fillBars(outside, 'H');
+
+    band.layoutSizingHorizontal = 'FILL';
+    band.layoutSizingVertical = 'HUG';
+    wA.layoutSizingHorizontal = 'FIXED';
+    wA.layoutSizingVertical = 'FILL';
+    wB.layoutSizingHorizontal = 'FIXED';
+    wB.layoutSizingVertical = 'FILL';
+    segA.layoutSizingHorizontal = 'FILL';
+    segB.layoutSizingHorizontal = 'FILL';
+    textWrap.layoutSizingHorizontal = 'HUG';
+    textWrap.layoutSizingVertical = 'HUG';
+
+    inside.layoutSizingHorizontal = 'FILL';
+    inside.layoutSizingVertical = 'FILL';
+    fillBars(inside, 'H');
+  } else {
+    outside.resize(Math.max(stub, 0.01), Math.max(outside.height, 1));
+    outside.layoutSizingVertical = 'FILL';
+    fillBars(outside, 'V');
+
+    band.layoutSizingVertical = 'FILL';
+    band.layoutSizingHorizontal = 'HUG';
+    wA.layoutSizingVertical = 'FIXED';
+    wA.layoutSizingHorizontal = 'FILL';
+    wB.layoutSizingVertical = 'FIXED';
+    wB.layoutSizingHorizontal = 'FILL';
+    segA.layoutSizingVertical = 'FILL';
+    segB.layoutSizingVertical = 'FILL';
+    textWrap.layoutSizingHorizontal = 'HUG';
+    textWrap.layoutSizingVertical = 'HUG';
+
+    inside.layoutSizingHorizontal = 'FILL';
+    inside.layoutSizingVertical = 'FILL';
+    fillBars(inside, 'V');
+  }
+
+  // Settle pass (gotcha #2): clear the stale 0 on each nested band's fill axis after the
+  // whole tree exists — the two extension bands and the inline band alike.
+  settleBand(outside, orient, false, stub);
+  settleBand(inside, orient, true, stub);
+  if (orient === 'H') {
+    band.resize(10, Math.max(textH, 1));
+    band.layoutSizingHorizontal = 'FILL';
+    band.layoutSizingVertical = 'HUG';
+  } else {
+    band.resize(Math.max(textW, 1), 10);
+    band.layoutSizingVertical = 'FILL';
+    band.layoutSizingHorizontal = 'HUG';
+  }
 }
 
 // ---------- recompute ----------
@@ -387,6 +588,11 @@ figma.showUI(__html__, { width: 264, height: 600, themeColors: true });
 
 figma.ui.onmessage = async (msg) => {
   if (msg.type === 'create') {
+    // The variant grid sends orient + style/flip together; fold them into settings (so they
+    // persist and land in the dropped frame's pluginData) before building.
+    if (msg.labelStyle === 'standard' || msg.labelStyle === 'inline') settings.labelStyle = msg.labelStyle;
+    if (typeof msg.flip === 'boolean') settings.flip = msg.flip;
+    await figma.clientStorage.setAsync('settings', settings);
     await buildDimension(msg.orient);
   } else if (msg.type === 'settings') {
     settings = { ...settings, ...msg.settings };
