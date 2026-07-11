@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "target": "ES2019",
+    "lib": ["ES2019", "DOM"],
+    "strict": true,
+    "typeRoots": ["./node_modules/@figma"]
+  },
+  "files": ["code.ts"]
+}

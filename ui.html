@@ -1,0 +1,153 @@
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 11px/1.4 Inter, -apple-system, sans-serif;
+    margin: 0; padding: 12px;
+    color: var(--figma-color-text, #1e1e1e);
+  }
+  h4 { margin: 14px 0 6px; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .6; }
+  .drop { display: flex; gap: 8px; margin-bottom: 4px; }
+  .drop button {
+    flex: 1; height: 40px; cursor: pointer; font-weight: 600; font-size: 12px;
+    border: 1px solid var(--figma-color-border, #d9d9d9);
+    border-radius: 6px; background: var(--figma-color-bg, #fff);
+    color: inherit;
+  }
+  .drop button:hover { background: var(--figma-color-bg-hover, #f5f5f5); }
+  .row { display: flex; align-items: center; justify-content: space-between; margin: 5px 0; }
+  .row label { flex: 1; }
+  .row input[type=number], .row select {
+    width: 96px; padding: 3px 6px; text-align: right;
+    border: 1px solid var(--figma-color-border, #d9d9d9);
+    border-radius: 4px; background: var(--figma-color-bg, #fff); color: inherit;
+  }
+  .row select { text-align: left; }
+  #fontFamily { width: 150px; }
+  .seg { display: flex; gap: 4px; margin: 6px 0 8px; }
+  .seg button {
+    flex: 1; height: 26px; cursor: pointer; font-size: 11px;
+    border: 1px solid var(--figma-color-border, #d9d9d9); border-radius: 4px;
+    background: var(--figma-color-bg, #fff); color: inherit;
+  }
+  .seg button.active {
+    background: var(--figma-color-bg-brand, #0d99ff); color: #fff; border-color: transparent;
+  }
+  .check { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+  .full { width: 100%; height: 30px; cursor: pointer; margin-top: 8px;
+    border: 1px solid var(--figma-color-border, #d9d9d9); border-radius: 6px;
+    background: var(--figma-color-bg, #fff); color: inherit; }
+  .full:hover { background: var(--figma-color-bg-hover, #f5f5f5); }
+  hr { border: none; border-top: 1px solid var(--figma-color-border, #e6e6e6); margin: 12px 0; }
+</style>
+
+<div class="drop">
+  <button id="h">↔ Horizontal</button>
+  <button id="v">↕ Vertical</button>
+</div>
+
+<h4>Line &amp; arrows</h4>
+<div class="row"><label>Line weight (drives arrows)</label><input type="number" id="thickness" step="0.5" min="0.25"></div>
+<div class="row"><label>Arrow style</label>
+  <select id="arrowStyle">
+    <option value="ARROW_EQUILATERAL">Solid triangle</option>
+    <option value="ARROW_LINES">Open chevron</option>
+  </select>
+</div>
+
+<h4>Label</h4>
+<div class="row"><label>Font</label><select id="fontFamily"></select></div>
+<div class="row"><label>Font size (px)</label><input type="number" id="fontSize" step="1" min="4"></div>
+
+<h4>Witness lines</h4>
+<div class="row"><label>Gap from feature (px)</label><input type="number" id="witnessGap" step="1" min="0"></div>
+<div class="row"><label>Overshoot past line (px)</label><input type="number" id="witnessOvershoot" step="1" min="0"></div>
+
+<h4>Units</h4>
+<div class="row"><label>DPI (Figma = 72)</label><input type="number" id="dpi" step="1" min="1"></div>
+<div class="seg" id="unit">
+  <button data-u="in">in</button>
+  <button data-u="ft">ft</button>
+  <button data-u="mm">mm</button>
+  <button data-u="cm">cm</button>
+  <button data-u="m">m</button>
+</div>
+<div class="row"><label>Decimals</label><input type="number" id="decimals" step="1" min="0" max="4"></div>
+<div class="check"><input type="checkbox" id="showUnit"><label for="showUnit">Show unit in label</label></div>
+
+<hr>
+<div class="check"><input type="checkbox" id="live"><label for="live">Live update while open</label></div>
+<button class="full" id="recalc">Recalculate all dimensions</button>
+
+<script>
+  const ids = ['thickness','arrowStyle','fontFamily','fontSize','witnessGap','witnessOvershoot','dpi','decimals','showUnit','live'];
+  const el = (id) => document.getElementById(id);
+  let currentUnit = 'in';
+
+  function read() {
+    return {
+      thickness: +el('thickness').value,
+      arrowStyle: el('arrowStyle').value,
+      fontFamily: el('fontFamily').value,
+      fontSize: +el('fontSize').value,
+      witnessGap: +el('witnessGap').value,
+      witnessOvershoot: +el('witnessOvershoot').value,
+      dpi: +el('dpi').value,
+      unit: currentUnit,
+      decimals: +el('decimals').value,
+      showUnit: el('showUnit').checked,
+      live: el('live').checked,
+    };
+  }
+  function push() { parent.postMessage({ pluginMessage: { type: 'settings', settings: read() } }, '*'); }
+
+  ids.forEach((id) => {
+    const node = el(id);
+    const evt = (node.type === 'checkbox' || node.tagName === 'SELECT') ? 'change' : 'input';
+    node.addEventListener(evt, push);
+  });
+
+  function markUnit() {
+    document.querySelectorAll('#unit button').forEach((b) => b.classList.toggle('active', b.dataset.u === currentUnit));
+  }
+  document.querySelectorAll('#unit button').forEach((b) => {
+    b.onclick = () => { currentUnit = b.dataset.u; markUnit(); push(); };
+  });
+
+  el('h').onclick = () => parent.postMessage({ pluginMessage: { type: 'create', orient: 'H' } }, '*');
+  el('v').onclick = () => parent.postMessage({ pluginMessage: { type: 'create', orient: 'V' } }, '*');
+  el('recalc').onclick = () => parent.postMessage({ pluginMessage: { type: 'recalc' } }, '*');
+
+  onmessage = (e) => {
+    const msg = e.data.pluginMessage;
+    if (msg && msg.type === 'init') {
+      const s = msg.settings;
+      // populate the font dropdown from available families
+      if (Array.isArray(msg.fonts)) {
+        const sel = el('fontFamily');
+        sel.innerHTML = '';
+        msg.fonts.forEach((fam) => {
+          const o = document.createElement('option');
+          o.value = fam; o.textContent = fam;
+          sel.appendChild(o);
+        });
+        if (s.fontFamily && msg.fonts.indexOf(s.fontFamily) < 0) {
+          const o = document.createElement('option');
+          o.value = s.fontFamily; o.textContent = s.fontFamily + ' (unavailable)';
+          sel.appendChild(o);
+        }
+      }
+      el('thickness').value = s.thickness;
+      el('arrowStyle').value = s.arrowStyle;
+      el('fontFamily').value = s.fontFamily;
+      el('fontSize').value = s.fontSize;
+      el('witnessGap').value = s.witnessGap;
+      el('witnessOvershoot').value = s.witnessOvershoot;
+      el('dpi').value = s.dpi;
+      currentUnit = s.unit || 'in';
+      markUnit();
+      el('decimals').value = s.decimals;
+      el('showUnit').checked = s.showUnit;
+      el('live').checked = s.live;
+    }
+  };
+</script>
