@@ -3,10 +3,11 @@
 Context for any session picking this up. Read this first; it captures the design
 decisions and the dead ends we already ruled out, so we don't re-litigate them.
 
-**Status:** Written from the official Figma Plugin API. **Not yet runtime-tested** —
-Jon is about to import and test. Treat runtime behavior as unverified. Most likely
-first bugs: the zero-thickness open-vector dimension line under STRETCH constraints,
-and the vertical orientation specifically.
+**Status:** **v2 — runtime-verified in Figma.** Both orientations build, stretch, and
+recompute correctly. Architecture moved from per-child *constraints* (v1) to
+**auto-layout Fill/Hug/Fixed** (v2) — see [docs/auto-layout.md](docs/auto-layout.md) for
+the full node tree and the three hard-won gotchas. Open cosmetic items: confirm the
+`Reversed` arrow enum mapping on a render; eyeball the vertical label standoff.
 
 ---
 
@@ -43,44 +44,53 @@ construction is keep the *number* correct.
 
 ## The approach we chose
 
-A **self-contained dimension = a FrameNode with per-child constraints.** Figma resizes
-frame children natively per their constraints, so stretching the frame stretches the
-dimension correctly with the plugin closed. The plugin constructs it once; the label
-value recomputes **live while open** (`documentchange`) and **on reopen** (scan +
-recalc).
+A **self-contained dimension = an auto-layout FrameNode** whose children use Fill/Hug/
+Fixed sizing. Figma reflows it natively in both axes when the user resizes the frame —
+no constraints, no rotation. The plugin constructs it once; the label value recomputes
+**live while open** (`documentchange`) and **on reopen** (scan + recalc).
+
+> v1 used per-child `constraints` (STRETCH/CENTER/MIN/MAX). That is **gone** — replaced
+> because Jon hand-built the parametric auto-layout version and it's cleaner. Don't
+> reintroduce constraints; the auto-layout model dissolved the old fragility risks
+> (zero-thickness line under STRETCH, flaky vertical constraints).
 
 ---
 
 ## Architecture
 
-Each dimension is a `FrameNode` (transparent fill, `clipsContent = false`) containing:
+Each dimension is an auto-layout `FrameNode` (transparent, `clipsContent = false`).
+**Full node tree, sizing table, and the build-order gotchas are in
+[docs/auto-layout.md](docs/auto-layout.md)** — read it before touching `buildDimension`.
+The essentials:
 
-- **Dimension line** — a two-point **open** vector (`vectorPaths` with
-  `windingRule: 'NONE'`), `strokeWeight = thickness`, `strokeCap = arrowStyle`.
-  Constraints: STRETCH along the measured axis, CENTER across it. Built natively per
-  orientation (horizontal vs vertical geometry) rather than rotating a line node —
-  **rotation + constraints is flaky in Figma**, so we avoid it.
-- **Two witness (extension) lines** — thin rectangles pinned to each extremity
-  (MIN / MAX along the axis, CENTER across). Two tunable knobs: `witnessGap` (standoff
-  from the feature) and `witnessOvershoot` (how far past the dimension line).
-- **Label** — a text node. Horizontal: centered above the line (CENTER / MIN). Vertical:
-  upright, to the right of the line (MIN / CENTER). Its `fontName`/`fontSize` are the
-  source of truth for the callout's font, set from settings at build via `resolveFont`.
-  `recalcLabel` reloads the label's own font before rewriting, so changing the default
-  font only affects new dimensions (same ownership rule as units).
+- **H** = vertical stack `[Text · Extension Outside · Dim · Extension Inside]`;
+  **V** = the rotated row. The **inside Extension band grows** (`FILL` on the length
+  axis) to reach the feature; everything else stays fixed. Bands and the line `FILL` the
+  measured axis.
+- **Dimension line** — open vector (`windingRule: 'NONE'`), `strokeCap = arrowStyle`.
+- **Witness/extension lines** — open **vectors** (not rectangles), so thickness stays
+  stroke-adjustable by hand. Split into `Extension Outside` (fixed overshoot stubs) and
+  `Extension Inside` (grows toward feature). Knobs: `witnessGap`, `witnessOvershoot`.
+- **Label** — a text node inside a `Text` wrapper frame whose fixed short cross-size
+  (`fontSize * TEXT_TIGHTEN_*`) makes the text spill toward the line, tightening the gap.
+  `recalcLabel` reloads the label's own font before rewriting (font ownership rule, as
+  with units).
 
-**Arrows use native stroke caps, not vector arrowheads.** Earlier design had separate
-vector arrowheads to allow an independent arrow-scale knob; Jon chose to couple arrow
-size to stroke weight, so we switched to `strokeCap` (`ARROW_EQUILATERAL` = solid
-triangle, `ARROW_LINES` = open chevron). Fewer nodes, always crisp, stretch for free.
-**Trade-off:** arrow size is not independently tunable. **Reason to revisit:** if arrows
-should be sized to text height rather than line weight — that's the case that would
-justify going back to vector arrowheads.
+**Three gotchas that WILL bite** (details in the sub-doc): (1) `resize()` resets both
+axes to Fixed — apply Fill/Hug **last**; (2) nested bands keep a **stale 0** on their
+Fill axis, fixed by a **settle pass** (`settleBand`) after the whole tree is built;
+(3) `documentchange` must be registered only **after** `loadAllPagesAsync()`.
 
-**Measured span = `frame.width` (H) or `frame.height` (V).** The line spans the true
-endpoints (0..LEN), so the frame's dimension *is* the measured length in pixels.
-Displayed value = `(span / dpi) * PER_INCH[unit]` — canvas inches = pixels / DPI, then
-converted to the chosen unit (`PER_INCH`: in 1, ft 1/12, mm 25.4, cm 2.54, m 0.0254).
+**Arrows use native stroke caps, not vector arrowheads** — `strokeCap` scales with weight
+and stretches for free. UI offers 5 as single words (Line/Triangle/Reversed/Circle/
+Diamond → `ARROW_LINES`/`ARROW_EQUILATERAL`/`TRIANGLE_FILLED`/`CIRCLE_FILLED`/
+`DIAMOND_FILLED`). Line style also rounds the extension-line ends (`strokeCap='ROUND'`).
+**Trade-off:** arrow size isn't independently tunable (couple-to-weight was Jon's call).
+
+**Measured span = `frame.width` (H) or `frame.height` (V).** Displayed value =
+`(span / dpi) * PER_INCH[unit] / scale` — canvas inches = pixels / DPI, converted to the
+unit (`PER_INCH`: in 1, ft 1/12, mm 25.4, cm 2.54, m 0.0254), then divided by drawing
+`scale` (0.25 = quarter-scale → labels read 4× larger).
 
 ### Self-describing via pluginData (this is what makes reopen-recalc work)
 
@@ -92,9 +102,10 @@ hcd:isDimension   "1"        (on the frame)
 hcd:orientation   "H" | "V"  (on the frame)
 hcd:dpi           px per inch (Figma baseline 72)  (on the frame)
 hcd:unit          "in" | "ft" | "mm" | "cm" | "m"  (on the frame)
+hcd:scale         float — drawing scale, value ÷= scale  (on the frame)
 hcd:decimals      int        (on the frame)
 hcd:showUnit      "1"|"0"    (on the frame)
-hcd:role          "line" | "witness" | "label"  (on children)
+hcd:role          "line" | "witness" | "label" | "extension" | "text"  (on children)
 ```
 
 Because each dimension carries its own dpi/unit, **old dimensions keep their original
@@ -117,8 +128,9 @@ message; code merges, saves to clientStorage, and applies to the *next* drop.
 - wraps the write in a module-level `suppress` flag.
 
 That diff + suppress combination prevents the label write from feeding back and
-retriggering. `loadAllPagesAsync()` is called when live is on (required for
-cross-page `documentchange` under `documentAccess: dynamic-page`).
+retriggering. The handler is registered in `init()` **after an unconditional**
+`await figma.loadAllPagesAsync()` — under `documentAccess: dynamic-page` registration
+itself throws otherwise (not just cross-page firing). Never register at module top level.
 
 ### Reopen recalc
 
@@ -137,6 +149,8 @@ code.ts         all plugin logic. Compiles to code.js (which Figma actually runs
 ui.html         control panel: Horizontal/Vertical drop buttons, option fields,
                 live toggle, Recalculate button. postMessage <-> code.
 tsconfig.json   compiles code.ts. strict: true (flip to false as an escape hatch).
+                lib must NOT include DOM (collides with @figma/plugin-typings'
+                console/fetch globals — TS2451). See docs/auto-layout.md.
 package.json    devDeps: @figma/plugin-typings, typescript. scripts: build, watch.
 ```
 
@@ -164,19 +178,26 @@ compile. Runtime errors surface in Plugins → Development → Show/Hide console
   `FONT` if the family can't be resolved or `loadFontAsync` throws. Family list comes
   from `figma.listAvailableFontsAsync()` (cached in `availableFonts`, sent to the UI on
   init so the dropdown only offers loadable fonts).
-- `LEN` = 240 (default span), `CROSS` = 44 (frame cross-axis size).
-- Witness geometry (`wTop`/`wBot`, and `label.y`) are the pixel spots to nudge for a
-  preferred drafting look. Everything else is driven by the option fields.
+- `LEN` = 240 (default measured span), `INSIDE` = 40 (default inside-band reach, grows),
+  `PAD_BOTTOM` = 4 (H bottom padding).
+- `TEXT_TIGHTEN_H` = 0.7 (H label wrapper height as a fraction of font size — text spills
+  down toward the line), `TEXT_TIGHTEN_V` = 0.4 (V: wrapper narrower than the text by this
+  fraction — text spills left toward the line). Both are starting heuristics; the V case
+  especially may want a fuller calc.
 - `Settings`: `thickness`, `arrowStyle`, `fontFamily`, `fontSize`, `witnessGap`,
-  `witnessOvershoot`, `dpi`, `unit`, `decimals`, `showUnit`, `live`. Units use a DPI
-  field + unit toggle (in/ft/mm/cm/m) via `PER_INCH`; there is no `scale` field anymore.
+  `witnessOvershoot`, `dpi`, `unit`, `scale`, `decimals`, `showUnit`, `live`. Units use a
+  DPI field + unit toggle (in/ft/mm/cm/m) via `PER_INCH`; `scale` is a text field that
+  parses decimals, whole numbers, or fractions (`1/4`).
 
 ## Open threads / next candidates
 
+- **Confirm `Reversed` arrow mapping** — `TRIANGLE_FILLED` is a guess; verify on a render.
+- **Vertical label standoff** — `TEXT_TIGHTEN_V` (0.4) is a first pass; eyeball and tune.
+- **Rounded extension ends** — currently Line-style only; other styles may want it.
 - **Color control** — currently the `COLOR` constant; promote to the UI. (Jon flagged
   this as the likely next add.)
-- **Feature tracking** — v1 is freestanding; it does not attach to or auto-follow
-  another object. True tracking needs an anchor/association layer. Phase two.
+- **Feature tracking** — the dimension is freestanding; it does not attach to or
+  auto-follow another object. True tracking needs an anchor/association layer. Phase two.
 - **Vertical label orientation** — currently upright beside the line; option to rotate
   it to read along the line.
 - **Arrow sizing** — coupled to stroke weight by design; text-height sizing would mean
@@ -221,8 +242,9 @@ by the 72-vs-export-DPI mismatch (a 12" frame exporting as 16" is 72->96). Read 
 **Prior art (reference, don't necessarily reinvent):** Easy Units, "Convert real
 dimensions to pixels," Units to Pixels, Millimeters, Unit Converter & Frame Creator.
 
-**Status:** concept only. Deferred behind the first real test run of the current
-(untested) feature stack — extend working code, don't pile onto unverified code.
+**Status:** concept only. The core dimension stack is now verified (v2), so this is
+unblocked — but the `scale` field already shipped and shares `PER_INCH`/`dpi`, so build
+size-input as the inverse mode on top of that, reusing the same math.
 
 ## Provenance
 

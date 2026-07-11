@@ -3,15 +3,30 @@
 /**
  * Dimension Tool
  * --------------
- * Drops a well-formatted dimension (horizontal or vertical) onto the canvas as a
- * FRAME with per-child constraints, so Figma stretches it natively:
- *   - dimension line   -> open path with ARROW stroke caps; STRETCH along the axis
- *   - witness lines    -> pinned to each end
- *   - label            -> pinned CENTER (horizontal) / to the side (vertical)
+ * Drops a well-formatted dimension (horizontal or vertical) onto the canvas.
  *
- * Arrow size follows stroke weight (native stroke caps). The label value is the
- * only non-native piece; it recomputes live (while open) and on reopen, because
- * each frame stores its own params in pluginData.
+ * v2 architecture: the dimension is an AUTO-LAYOUT frame (not constraints), so
+ * Figma reflows it natively when the user resizes it — in both axes, with no
+ * rotation and no per-child constraint math. Structure mirrors the hand-built
+ * parametric version:
+ *
+ *   Horizontal = vertical stack, top -> bottom:
+ *     [ Text (hug, short fixed cross-height) ]
+ *     [ Extension Outside (fixed band)       ]   overshoot stubs above the line
+ *     [ Dim line (open vector, STRETCH)      ]   arrow stroke caps at both ends
+ *     [ Extension Inside (GROWS)             ]   witness lines reaching the feature
+ *
+ *   Vertical = the same stack rotated into a row:
+ *     [ Extension Inside (GROWS) | Dim | Extension Outside | Text ]
+ *
+ * The growing inside band is what makes it parametric: resize the frame across
+ * the measured axis and the inside witness band absorbs the slack to reach the
+ * feature at any depth, while label / overshoot / line stay fixed.
+ *
+ * Arrows are native stroke caps (StrokeCap enum) — they render exactly like
+ * Figma's own, including the rounded line-arrow ends, and scale with weight.
+ * The label value is the only non-native piece; it recomputes live (while open)
+ * and on reopen, from params each frame stores in pluginData.
  */
 
 const NS = 'hcd';
@@ -20,6 +35,7 @@ const K = {
   orient: `${NS}:orientation`,
   dpi: `${NS}:dpi`,
   unit: `${NS}:unit`,
+  scale: `${NS}:scale`,
   decimals: `${NS}:decimals`,
   showUnit: `${NS}:showUnit`,
   role: `${NS}:role`,
@@ -29,7 +45,7 @@ const FONT: FontName = { family: 'Inter', style: 'Regular' };
 const COLOR: RGB = { r: 0.11, g: 0.11, b: 0.12 };
 
 // Unit magnitude per inch. Canvas inches = pixels / dpi (Figma baseline dpi = 72),
-// so value = (pixels / dpi) * PER_INCH[unit].
+// so value = (pixels / dpi) * PER_INCH[unit] / scale.
 const PER_INCH: Record<string, number> = {
   in: 1,
   ft: 1 / 12,
@@ -38,13 +54,25 @@ const PER_INCH: Record<string, number> = {
   m: 0.0254,
 };
 
+// The label wrapper is given a fixed size SHORTER than the text so the text
+// overflows toward the line, tightening the label-to-line gap. Expressed as a
+// fraction of font size so it scales with the font. Starting heuristics — refine as
+// needed (Jon flagged this may want a fuller calc, esp. for the vertical case).
+const TEXT_TIGHTEN_H = 0.7; // H: wrapper height = fontSize * this (text spills down)
+const TEXT_TIGHTEN_V = 0.4; // V: wrapper narrower than text by fontSize * this (text spills toward line)
+
+const LEN = 240;   // default measured span (the value tracks this)
+const INSIDE = 40; // default inside-extension reach (grows on resize)
+const PAD_BOTTOM = 4; // H: bottom padding under the inside band (matches reference)
+
 interface Settings {
   thickness: number;        // px stroke weight of the dimension line -> also drives arrow size
-  arrowStyle: StrokeCap;    // 'ARROW_EQUILATERAL' | 'ARROW_LINES'
+  arrowStyle: StrokeCap;    // native stroke cap enum value
   witnessGap: number;       // px standoff from the feature before the witness line begins
   witnessOvershoot: number; // px the witness line extends past the dimension line
   dpi: number;              // pixels per inch (Figma baseline = 72)
   unit: string;             // 'in' | 'ft' | 'mm' | 'cm' | 'm'
+  scale: number;            // drawing scale: displayed value = measured / scale
   fontFamily: string;       // label font family (must be available/loadable)
   fontSize: number;         // label font size in px
   decimals: number;
@@ -59,6 +87,7 @@ const DEFAULTS: Settings = {
   witnessOvershoot: 8,
   dpi: 72,
   unit: 'in',
+  scale: 1,
   fontFamily: 'Inter',
   fontSize: 11,
   decimals: 1,
@@ -73,20 +102,11 @@ let availableFonts: Font[] = []; // cached from listAvailableFontsAsync()
 
 // ---------- geometry helpers ----------
 
-/** Solid rectangle used for the witness lines. */
-function bar(w: number, h: number, role: string): RectangleNode {
-  const r = figma.createRectangle();
-  r.resize(Math.max(w, 0.01), Math.max(h, 0.01));
-  r.fills = [{ type: 'SOLID', color: COLOR }];
-  r.strokes = [];
-  r.setPluginData(K.role, role);
-  return r;
-}
-
 /**
  * The dimension line: a two-point OPEN path, so both ends are open and receive
- * the arrow stroke cap. Built natively per orientation (no rotation), so it
- * stretches cleanly under constraints. Arrow size scales with strokeWeight.
+ * the arrow stroke cap. Length is provisional — as an auto-layout child with
+ * layoutAlign STRETCH, Figma stretches it along the measured axis, moving the
+ * far endpoint so the cap always sits at the true extremity.
  */
 function dimLine(orient: 'H' | 'V', length: number, thickness: number, style: StrokeCap): VectorNode {
   const data = orient === 'H' ? `M 0 0 L ${length} 0` : `M 0 0 L 0 ${length}`;
@@ -100,15 +120,94 @@ function dimLine(orient: 'H' | 'V', length: number, thickness: number, style: St
   return v;
 }
 
+/**
+ * A single witness/extension line: an OPEN vector (like the dim line), so its
+ * thickness stays stroke-driven and hand-adjustable later without the plugin.
+ * Length is provisional — it FILLs its band's cross axis via layoutSizing.
+ *   orient 'H' -> vertical line; orient 'V' -> horizontal line.
+ */
+function witnessBar(orient: 'H' | 'V', thickness: number, roundEnds: boolean): VectorNode {
+  const data = orient === 'H' ? 'M 0 0 L 0 100' : 'M 0 0 L 100 0';
+  const v = figma.createVector();
+  v.vectorPaths = [{ windingRule: 'NONE', data }];
+  v.fills = [];
+  v.strokes = [{ type: 'SOLID', color: COLOR }];
+  v.strokeWeight = thickness;
+  // Round the extension-line ends to match Figma's Line-arrow look (Line style only).
+  v.strokeCap = roundEnds ? 'ROUND' : 'NONE';
+  v.setPluginData(K.role, 'witness');
+  return v;
+}
+
+/**
+ * An extension band: an auto-layout frame holding two witness vectors pushed to the
+ * two ends (SPACE_BETWEEN). Used for both the outside overshoot stubs and the inside
+ * witness lines.
+ *   orient 'H' -> horizontal band, vertical bars at each end.
+ *   orient 'V' -> vertical band, horizontal bars at top/bottom.
+ * Bars are appended here; their FILL sizing is applied by fillBars() AFTER the band
+ * itself has been parented and sized (Fill/Hug/Fixed must resolve outermost-first).
+ */
+function extensionBand(orient: 'H' | 'V', thickness: number, roundEnds: boolean): FrameNode {
+  const band = figma.createFrame();
+  band.name = 'Extension';
+  band.fills = [];
+  band.clipsContent = false;
+  band.layoutMode = orient === 'H' ? 'HORIZONTAL' : 'VERTICAL';
+  band.primaryAxisAlignItems = 'SPACE_BETWEEN';
+  band.counterAxisAlignItems = 'CENTER';
+  band.itemSpacing = 0;
+  band.setPluginData(K.role, 'extension');
+  band.appendChild(witnessBar(orient, thickness, roundEnds));
+  band.appendChild(witnessBar(orient, thickness, roundEnds));
+  return band;
+}
+
+/** Make each bar FILL the band's cross axis (its length) and stay 0 on thickness. */
+function fillBars(band: FrameNode, orient: 'H' | 'V') {
+  for (const bar of band.children as VectorNode[]) {
+    if (orient === 'H') {
+      bar.layoutSizingHorizontal = 'FIXED'; // 0-width path
+      bar.layoutSizingVertical = 'FILL';
+    } else {
+      bar.layoutSizingVertical = 'FIXED'; // 0-height path
+      bar.layoutSizingHorizontal = 'FILL';
+    }
+  }
+}
+
+/**
+ * Force a nested band to recompute its Fill size. Built in one synchronous pass, a
+ * nested auto-layout frame keeps a STALE 0 on the axis that fills its parent's counter
+ * axis (verified: identical props to a hand-built band, but width 0 vs 250). The only
+ * fix is to resize it to a NONZERO fixed size and re-apply Fill — and it must run AFTER
+ * the whole tree is assembled, so this is a final "settle" pass, not done mid-build.
+ *   grows = the band also fills its primary (length) axis (the inside band);
+ *   overshoot = the fixed cross size to preserve for the non-growing outside band.
+ */
+function settleBand(band: FrameNode, orient: 'H' | 'V', grows: boolean, overshoot: number) {
+  const fixed = Math.max(overshoot, 0.01);
+  if (orient === 'H') {
+    band.resize(10, grows ? 10 : fixed);
+    band.layoutSizingHorizontal = 'FILL';
+    if (grows) band.layoutSizingVertical = 'FILL';
+  } else {
+    band.resize(grows ? 10 : fixed, 10);
+    band.layoutSizingVertical = 'FILL';
+    if (grows) band.layoutSizingHorizontal = 'FILL';
+  }
+}
+
 // ---------- value formatting ----------
 
 function fmtFrom(frame: FrameNode, px: number): string {
   const dpi = parseFloat(frame.getPluginData(K.dpi) || '72') || 72;
   const unit = frame.getPluginData(K.unit) || 'in';
   const perInch = PER_INCH[unit] !== undefined ? PER_INCH[unit] : 1;
+  const scale = parseFloat(frame.getPluginData(K.scale) || '1') || 1;
   const dec = parseInt(frame.getPluginData(K.decimals) || '1', 10);
   const showU = frame.getPluginData(K.showUnit) === '1';
-  const v = ((px / dpi) * perInch).toFixed(dec);
+  const v = (((px / dpi) * perInch) / scale).toFixed(dec);
   return showU && unit ? `${v} ${unit}` : v;
 }
 
@@ -136,19 +235,19 @@ async function buildDimension(orient: 'H' | 'V') {
     font = FONT; // family vanished / not loadable -> fall back to Inter
     await figma.loadFontAsync(FONT);
   }
-  const LEN = 240;   // default measured span (the value tracks this)
-  const CROSS = 44;  // cross-axis size of the frame
-
-  const frame = figma.createFrame();
-  frame.name = `Dimension (${orient})`;
-  frame.fills = [];
-  frame.clipsContent = false;
-  frame.setPluginData(K.isDim, '1');
-  frame.setPluginData(K.orient, orient);
-  frame.setPluginData(K.dpi, String(s.dpi));
-  frame.setPluginData(K.unit, s.unit);
-  frame.setPluginData(K.decimals, String(s.decimals));
-  frame.setPluginData(K.showUnit, s.showUnit ? '1' : '0');
+  const root = figma.createFrame();
+  root.name = `Dimension (${orient})`;
+  root.fills = [];
+  root.clipsContent = false;
+  root.itemSpacing = 0;
+  root.paddingTop = root.paddingBottom = root.paddingLeft = root.paddingRight = 0;
+  root.setPluginData(K.isDim, '1');
+  root.setPluginData(K.orient, orient);
+  root.setPluginData(K.dpi, String(s.dpi));
+  root.setPluginData(K.unit, s.unit);
+  root.setPluginData(K.scale, String(s.scale));
+  root.setPluginData(K.decimals, String(s.decimals));
+  root.setPluginData(K.showUnit, s.showUnit ? '1' : '0');
 
   const label = figma.createText();
   label.fontName = font;
@@ -156,68 +255,89 @@ async function buildDimension(orient: 'H' | 'V') {
   label.fills = [{ type: 'SOLID', color: COLOR }];
   label.textAlignHorizontal = 'CENTER';
   label.setPluginData(K.role, 'label');
+  label.characters = fmtFrom(root, LEN); // root pluginData already set
 
+  const textWrap = figma.createFrame();
+  textWrap.name = 'Text';
+  textWrap.fills = [];
+  textWrap.clipsContent = false;
+  textWrap.itemSpacing = 0;
+  textWrap.layoutMode = 'HORIZONTAL';
+  textWrap.setPluginData(K.role, 'text');
+
+  // Line-arrow style gets rounded extension-line ends to match Figma's native look.
+  const roundEnds = s.arrowStyle === 'ARROW_LINES';
+  const line = dimLine(orient, LEN, s.thickness, s.arrowStyle);
+  const outside = extensionBand(orient, s.thickness, roundEnds);
+  const inside = extensionBand(orient, s.thickness, roundEnds);
+
+  // Root is a fixed-size auto-layout box the user resizes freely; children Fill it.
+  root.layoutMode = orient === 'H' ? 'VERTICAL' : 'HORIZONTAL';
+  root.counterAxisAlignItems = 'CENTER';
+  root.primaryAxisSizingMode = 'FIXED';
+  root.counterAxisSizingMode = 'FIXED';
+
+  // IMPORTANT: resize() forces BOTH axes back to Fixed sizing, so any Fill/Hug must
+  // be applied AFTER the last resize() on a node — otherwise it's silently clobbered
+  // (which pinned the extension bands to 0px). Order below is always resize-then-Fill.
   if (orient === 'H') {
-    frame.resize(LEN, CROSS);
-    const yMid = CROSS / 2;
+    root.paddingBottom = PAD_BOTTOM;
+    root.resize(LEN, Math.round(s.fontSize * TEXT_TIGHTEN_H) + s.witnessOvershoot + INSIDE + PAD_BOTTOM);
 
-    // dimension line spans the full measured length; arrow caps sit at each tip.
-    const line = dimLine('H', LEN, s.thickness, s.arrowStyle);
-    frame.appendChild(line);
-    line.x = 0;
-    line.y = yMid;
-    line.constraints = { horizontal: 'STRETCH', vertical: 'CENTER' };
+    // Text wrapper: hug width, fixed SHORT height -> text top-aligns and spills down.
+    textWrap.counterAxisAlignItems = 'MIN';
+    textWrap.primaryAxisAlignItems = 'CENTER';
+    textWrap.appendChild(label);
+    root.appendChild(textWrap);
+    textWrap.resize(Math.max(textWrap.width, 1), Math.max(Math.round(s.fontSize * TEXT_TIGHTEN_H), 1));
+    textWrap.layoutSizingHorizontal = 'HUG'; // last: re-hug width, keep fixed height
 
-    // witness lines: vertical, at each extremity. Tunable geometry.
-    const wTop = yMid - s.witnessOvershoot;
-    const wBot = CROSS - s.witnessGap;
-    const wH = Math.max(wBot - wTop, 0.01);
-    const wL = bar(s.thickness, wH, 'witness');
-    frame.appendChild(wL);
-    wL.x = -s.thickness / 2; wL.y = wTop;
-    wL.constraints = { horizontal: 'MIN', vertical: 'CENTER' };
-    const wR = bar(s.thickness, wH, 'witness');
-    frame.appendChild(wR);
-    wR.x = LEN - s.thickness / 2; wR.y = wTop;
-    wR.constraints = { horizontal: 'MAX', vertical: 'CENTER' };
+    root.appendChild(outside);
+    outside.resize(Math.max(outside.width, 1), Math.max(s.witnessOvershoot, 0.01));
+    outside.layoutSizingHorizontal = 'FILL'; // last: fill width, keep fixed height
+    fillBars(outside, 'H');
 
-    label.characters = fmtFrom(frame, LEN);
-    frame.appendChild(label);
-    label.x = (LEN - label.width) / 2;
-    label.y = -(label.height + 4); // floats just above the line; adjust to taste
-    label.constraints = { horizontal: 'CENTER', vertical: 'MIN' };
+    root.appendChild(line);
+    line.layoutSizingHorizontal = 'FILL';
+
+    root.appendChild(inside);
+    inside.layoutSizingHorizontal = 'FILL';
+    inside.layoutSizingVertical = 'FILL'; // grows -> reaches the feature
+    fillBars(inside, 'H');
   } else {
-    frame.resize(CROSS, LEN);
-    const xMid = CROSS / 2;
+    root.resize(INSIDE + s.witnessOvershoot + Math.max(label.width, 1), LEN);
 
-    const line = dimLine('V', LEN, s.thickness, s.arrowStyle);
-    frame.appendChild(line);
-    line.x = xMid;
-    line.y = 0;
-    line.constraints = { horizontal: 'CENTER', vertical: 'STRETCH' };
+    root.appendChild(inside);
+    inside.layoutSizingHorizontal = 'FILL'; // grows -> reaches the feature
+    inside.layoutSizingVertical = 'FILL';
+    fillBars(inside, 'V');
 
-    const wLeft = xMid - s.witnessOvershoot;
-    const wRight = CROSS - s.witnessGap;
-    const wW = Math.max(wRight - wLeft, 0.01);
-    const wT = bar(wW, s.thickness, 'witness');
-    frame.appendChild(wT);
-    wT.x = wLeft; wT.y = -s.thickness / 2;
-    wT.constraints = { horizontal: 'CENTER', vertical: 'MIN' };
-    const wB = bar(wW, s.thickness, 'witness');
-    frame.appendChild(wB);
-    wB.x = wLeft; wB.y = LEN - s.thickness / 2;
-    wB.constraints = { horizontal: 'CENTER', vertical: 'MAX' };
+    root.appendChild(line);
+    line.layoutSizingVertical = 'FILL';
 
-    label.characters = fmtFrom(frame, LEN);
-    frame.appendChild(label);
-    label.x = CROSS + 4; // upright, to the right of the line
-    label.y = (LEN - label.height) / 2;
-    label.constraints = { horizontal: 'MIN', vertical: 'CENTER' };
+    root.appendChild(outside);
+    outside.resize(Math.max(s.witnessOvershoot, 0.01), Math.max(outside.height, 1));
+    outside.layoutSizingVertical = 'FILL'; // last: fill height, keep fixed width
+    fillBars(outside, 'V');
+
+    // Text wrapper: upright, hug height, fixed width NARROWER than the text and
+    // right-aligned, so the text spills left toward the line.
+    textWrap.counterAxisAlignItems = 'CENTER';
+    textWrap.primaryAxisAlignItems = 'MAX';
+    textWrap.appendChild(label);
+    root.appendChild(textWrap);
+    textWrap.resize(Math.max(label.width - Math.round(s.fontSize * TEXT_TIGHTEN_V), 1), Math.max(textWrap.height, 1));
+    textWrap.layoutSizingVertical = 'HUG'; // last: re-hug height, keep fixed width
   }
 
-  frame.x = Math.round(figma.viewport.center.x - frame.width / 2);
-  frame.y = Math.round(figma.viewport.center.y - frame.height / 2);
-  figma.currentPage.selection = [frame];
+  // Settle pass: the whole tree now exists, so re-apply Fill to the bands to clear the
+  // stale 0-size on their stretch axis (see settleBand). Must be after all appends.
+  settleBand(outside, orient, false, s.witnessOvershoot);
+  settleBand(inside, orient, true, s.witnessOvershoot);
+
+  root.x = Math.round(figma.viewport.center.x - root.width / 2);
+  root.y = Math.round(figma.viewport.center.y - root.height / 2);
+  figma.currentPage.selection = [root];
 }
 
 // ---------- recompute ----------
@@ -243,7 +363,10 @@ async function recalcAll() {
 
 // ---------- live mode ----------
 
-figma.on('documentchange', async (e) => {
+// NOTE: under documentAccess: dynamic-page, figma.loadAllPagesAsync() MUST be
+// awaited before this handler is registered (not just before it fires), so
+// registration is deferred into init() after that await — never at top level.
+async function onDocChange(e: DocumentChangeEvent) {
   if (!liveOn || suppress) return;
   const seen = new Set<string>();
   for (const c of e.documentChanges) {
@@ -256,11 +379,11 @@ figma.on('documentchange', async (e) => {
       await recalcLabel(n as FrameNode);
     }
   }
-});
+}
 
 // ---------- lifecycle ----------
 
-figma.showUI(__html__, { width: 264, height: 560, themeColors: true });
+figma.showUI(__html__, { width: 264, height: 600, themeColors: true });
 
 figma.ui.onmessage = async (msg) => {
   if (msg.type === 'create') {
@@ -269,7 +392,8 @@ figma.ui.onmessage = async (msg) => {
     settings = { ...settings, ...msg.settings };
     liveOn = settings.live;
     await figma.clientStorage.setAsync('settings', settings);
-    if (liveOn) await figma.loadAllPagesAsync().catch(() => {});
+    // No loadAllPagesAsync here: init() already awaited it before registering
+    // the documentchange handler, so toggling live on just flips the flag.
   } else if (msg.type === 'recalc') {
     await recalcAll();
   }
@@ -282,6 +406,10 @@ figma.ui.onmessage = async (msg) => {
   availableFonts = await figma.listAvailableFontsAsync();
   const families = Array.from(new Set(availableFonts.map((f) => f.fontName.family))).sort();
   figma.ui.postMessage({ type: 'init', settings, fonts: families });
-  if (liveOn) await figma.loadAllPagesAsync().catch(() => {});
+  // Required before registering documentchange under dynamic-page access. Done
+  // unconditionally (not just when live is on) so the handler can be registered
+  // now; the handler itself early-returns when liveOn is false, so it's cheap.
+  await figma.loadAllPagesAsync().catch(() => {});
+  figma.on('documentchange', onDocChange);
   await recalcAll(); // refresh any stale labels on reopen
 })();

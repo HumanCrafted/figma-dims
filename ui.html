@@ -49,8 +49,11 @@
 <div class="row"><label>Line weight (drives arrows)</label><input type="number" id="thickness" step="0.5" min="0.25"></div>
 <div class="row"><label>Arrow style</label>
   <select id="arrowStyle">
-    <option value="ARROW_EQUILATERAL">Solid triangle</option>
-    <option value="ARROW_LINES">Open chevron</option>
+    <option value="ARROW_LINES">Line</option>
+    <option value="ARROW_EQUILATERAL">Triangle</option>
+    <option value="TRIANGLE_FILLED">Reversed</option>
+    <option value="CIRCLE_FILLED">Circle</option>
+    <option value="DIAMOND_FILLED">Diamond</option>
   </select>
 </div>
 
@@ -64,6 +67,7 @@
 
 <h4>Units</h4>
 <div class="row"><label>DPI (Figma = 72)</label><input type="number" id="dpi" step="1" min="1"></div>
+<div class="row"><label>Scale (e.g. 1, 0.25, 1/4)</label><input type="text" id="scale" inputmode="text"></div>
 <div class="seg" id="unit">
   <button data-u="in">in</button>
   <button data-u="ft">ft</button>
@@ -79,9 +83,24 @@
 <button class="full" id="recalc">Recalculate all dimensions</button>
 
 <script>
-  const ids = ['thickness','arrowStyle','fontFamily','fontSize','witnessGap','witnessOvershoot','dpi','decimals','showUnit','live'];
+  const ids = ['thickness','arrowStyle','fontFamily','fontSize','witnessGap','witnessOvershoot','dpi','scale','decimals','showUnit','live'];
   const el = (id) => document.getElementById(id);
   let currentUnit = 'in';
+
+  // Accept a plain decimal (0.25), a whole number (1), or a fraction (1/4).
+  // Falls back to 1 for empty/invalid input so the label math never divides by 0.
+  function parseScale(str) {
+    str = String(str == null ? '' : str).trim();
+    if (!str) return 1;
+    if (str.indexOf('/') >= 0) {
+      const parts = str.split('/');
+      const a = parseFloat(parts[0]);
+      const b = parseFloat(parts[1]);
+      return (isFinite(a) && isFinite(b) && b !== 0) ? a / b : 1;
+    }
+    const n = parseFloat(str);
+    return (isFinite(n) && n > 0) ? n : 1;
+  }
 
   function read() {
     return {
@@ -93,6 +112,7 @@
       witnessOvershoot: +el('witnessOvershoot').value,
       dpi: +el('dpi').value,
       unit: currentUnit,
+      scale: parseScale(el('scale').value),
       decimals: +el('decimals').value,
       showUnit: el('showUnit').checked,
       live: el('live').checked,
@@ -143,6 +163,7 @@
       el('witnessGap').value = s.witnessGap;
       el('witnessOvershoot').value = s.witnessOvershoot;
       el('dpi').value = s.dpi;
+      el('scale').value = s.scale != null ? s.scale : 1;
       currentUnit = s.unit || 'in';
       markUnit();
       el('decimals').value = s.decimals;
