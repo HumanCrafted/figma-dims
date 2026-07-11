@@ -61,10 +61,13 @@
     background: var(--figma-color-bg-brand, #0d99ff); color: #fff; border-color: transparent;
   }
   .check { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
-  .full { width: 100%; height: 30px; cursor: pointer; margin-top: 8px;
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
+  .actions button {
+    flex: 1; height: 30px; cursor: pointer; font-size: 11px;
     border: 1px solid var(--figma-color-border, #d9d9d9); border-radius: 6px;
-    background: var(--figma-color-bg, #fff); color: inherit; }
-  .full:hover { background: var(--figma-color-bg-hover, #f5f5f5); }
+    background: var(--figma-color-bg, #fff); color: inherit;
+  }
+  .actions button:hover { background: var(--figma-color-bg-hover, #f5f5f5); }
   hr { border: none; border-top: 1px solid var(--figma-color-border, #e6e6e6); margin: 12px 0; }
 </style>
 
@@ -114,7 +117,10 @@
 
 <hr>
 <div class="check"><input type="checkbox" id="live"><label for="live">Live update while open</label></div>
-<button class="full" id="recalc">Recalculate all dimensions</button>
+<div class="actions">
+  <button id="selectAll">Select all</button>
+  <button id="updateSel">Update Dims</button>
+</div>
 
 <script>
   const ids = ['thickness','arrowStyle','fontFamily','fontSize','witnessGap','witnessOvershoot','dpi','scale','decimals','showUnit','live'];
@@ -210,14 +216,15 @@
     b.onclick = () => { currentUnit = b.dataset.u; markUnit(); push(); };
   });
 
-  el('recalc').onclick = () => parent.postMessage({ pluginMessage: { type: 'recalc' } }, '*');
+  el('selectAll').onclick = () => parent.postMessage({ pluginMessage: { type: 'selectAll' } }, '*');
+  el('updateSel').onclick = () => parent.postMessage({ pluginMessage: { type: 'updateSelected' } }, '*');
 
   // Resize the plugin window to fit the content, so collapsing sections actually shrinks it.
   // Measure from the last element's layout offset (not body's box, which can stretch to the
   // iframe height and never report the shorter content height).
   function syncHeight() {
     requestAnimationFrame(() => {
-      const last = el('recalc');
+      const last = el('updateSel');
       const h = Math.ceil(last.offsetTop + last.offsetHeight) + 12; // + body bottom padding
       parent.postMessage({ pluginMessage: { type: 'resize', height: h } }, '*');
     });

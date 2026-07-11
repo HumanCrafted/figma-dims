@@ -222,7 +222,13 @@ function resolveFont(family) {
     return FONT; // fallback: Inter Regular
 }
 // ---------- build ----------
-async function buildDimension(orient) {
+/**
+ * Build a fully-assembled dimension frame with the CURRENT settings for stylistic props,
+ * but an EXPLICIT orient/labelStyle/flip (so it serves both a fresh drop — which passes the
+ * settings' style — and an update/rebuild — which passes the existing dim's own stored
+ * style). Not positioned or selected; the caller places it.
+ */
+async function createDimensionRoot(orient, labelStyle, flip) {
     const s = settings;
     if (!availableFonts.length)
         availableFonts = await figma.listAvailableFontsAsync();
@@ -234,17 +240,17 @@ async function buildDimension(orient) {
         font = FONT; // family vanished / not loadable -> fall back to Inter
         await figma.loadFontAsync(FONT);
     }
-    const inline = s.labelStyle === 'inline';
+    const inline = labelStyle === 'inline';
     const root = figma.createFrame();
-    root.name = `Dimension (${orient})${inline ? ' - Inline' : ''}${s.flip ? ' - Flip' : ''}`;
+    root.name = `Dimension (${orient})${inline ? ' - Inline' : ''}${flip ? ' - Flip' : ''}`;
     root.fills = [];
     root.clipsContent = false;
     root.itemSpacing = 0;
     root.paddingTop = root.paddingBottom = root.paddingLeft = root.paddingRight = 0;
     root.setPluginData(K.isDim, '1');
     root.setPluginData(K.orient, orient);
-    root.setPluginData(K.labelStyle, s.labelStyle);
-    root.setPluginData(K.flip, s.flip ? '1' : '0');
+    root.setPluginData(K.labelStyle, labelStyle);
+    root.setPluginData(K.flip, flip ? '1' : '0');
     root.setPluginData(K.dpi, String(s.dpi));
     root.setPluginData(K.unit, s.unit);
     root.setPluginData(K.scale, String(s.scale));
@@ -263,12 +269,42 @@ async function buildDimension(orient) {
     root.primaryAxisSizingMode = 'FIXED';
     root.counterAxisSizingMode = 'FIXED';
     if (inline)
-        await assembleInline(root, orient, s.flip, s, label);
+        await assembleInline(root, orient, flip, s, label);
     else
-        assembleStandard(root, orient, s.flip, s, label);
+        assembleStandard(root, orient, flip, s, label);
+    return root;
+}
+/** Fresh drop from a Variant-grid button: build with the settings' style, center, select. */
+async function buildDimension(orient) {
+    const root = await createDimensionRoot(orient, settings.labelStyle, settings.flip);
     root.x = Math.round(figma.viewport.center.x - root.width / 2);
     root.y = Math.round(figma.viewport.center.y - root.height / 2);
     figma.currentPage.selection = [root];
+}
+/**
+ * Re-style an existing dimension: rebuild it from its OWN stored orient/labelStyle/flip
+ * using the current settings, preserving footprint (position, parent/z-order, and measured
+ * span via width/height). Rebuild (rather than surgical mutation) guarantees every setting —
+ * including font size, which drives layout — is applied correctly. Returns the new node.
+ */
+async function updateDimension(old) {
+    if (old.getPluginData(K.isDim) !== '1')
+        return null;
+    const orient = old.getPluginData(K.orient) === 'V' ? 'V' : 'H';
+    const labelStyle = old.getPluginData(K.labelStyle) === 'inline' ? 'inline' : 'standard';
+    const flip = old.getPluginData(K.flip) === '1';
+    const { x, y, width, height } = old;
+    const parent = old.parent;
+    const idx = parent ? parent.children.indexOf(old) : -1;
+    const root = await createDimensionRoot(orient, labelStyle, flip);
+    root.resize(Math.max(width, 0.01), Math.max(height, 0.01)); // preserve the measured footprint
+    if (parent && idx >= 0)
+        parent.insertChild(idx, root); // same parent + z-order
+    root.x = x;
+    root.y = y;
+    old.remove();
+    await recalcLabel(root); // label reflects the preserved span under the new settings
+    return root;
 }
 /**
  * Apply the witness gap: padding between the growing inside band and the frame edge on the
@@ -560,8 +596,26 @@ figma.ui.onmessage = async (msg) => {
         // No loadAllPagesAsync here: init() already awaited it before registering
         // the documentchange handler, so toggling live on just flips the flag.
     }
-    else if (msg.type === 'recalc') {
-        await recalcAll();
+    else if (msg.type === 'selectAll') {
+        const dims = figma.currentPage.findAll((n) => n.getPluginData(K.isDim) === '1');
+        figma.currentPage.selection = dims;
+        figma.notify(dims.length ? `Selected ${dims.length} dimension${dims.length === 1 ? '' : 's'}` : 'No dimensions on this page');
+    }
+    else if (msg.type === 'updateSelected') {
+        const sel = figma.currentPage.selection.filter((n) => typeof n.getPluginData === 'function' && n.getPluginData(K.isDim) === '1');
+        if (!sel.length) {
+            figma.notify('Select one or more dimensions first');
+        }
+        else {
+            const next = [];
+            for (const d of sel) {
+                const r = await updateDimension(d);
+                if (r)
+                    next.push(r);
+            }
+            figma.currentPage.selection = next;
+            figma.notify(`Updated ${next.length} dimension${next.length === 1 ? '' : 's'}`);
+        }
     }
     else if (msg.type === 'resize') {
         // UI reports its content height so the window shrinks/grows as sections collapse/expand.

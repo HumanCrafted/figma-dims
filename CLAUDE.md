@@ -148,7 +148,26 @@ itself throws otherwise (not just cross-page firing). Never register at module t
 ### Reopen recalc
 
 `init()` on startup scans `currentPage` for `hcd:isDimension` frames and refreshes each
-label. A **Recalculate all** button does the same on demand.
+label (`recalcAll`). This runs automatically on open — there is no manual recalc button
+(the label value is also kept live while open via `documentchange`).
+
+### Select all / Update selected (restyle existing dims)
+
+Two footer buttons operate on placed dims:
+
+- **Select all** → selects every `hcd:isDimension` frame on `currentPage`.
+- **Update selected Dims** → re-applies the current UI settings to each selected dim.
+
+"Update" is a **rebuild**, not a surgical mutation: `updateDimension` reads the dim's own
+stored `orient`/`labelStyle`/`flip`, calls `createDimensionRoot` (the extracted core of
+`buildDimension`) with the *current* settings, resizes the new frame to the old
+**footprint** (position, parent + z-order via `insertChild`, and width/height so the
+measured span is preserved), removes the old, and `recalcLabel`s. Rebuilding guarantees
+every setting — including **font size, which drives layout** — lands correctly, which a
+field-by-field mutation wouldn't. The build-then-`resize()`-in-one-pass reflow is
+runtime-confirmed via `use_figma` (nested Fill bands reflow to nonzero after the resize;
+no stale-0). Pre-v2.1 dims (no `labelStyle`/`flip` data) rebuild as standard non-flip,
+matching their original geometry.
 
 ---
 
@@ -162,8 +181,9 @@ code.ts         all plugin logic. Compiles to code.js (which Figma actually runs
 ui.html         control panel: a fixed "Drop a dimension" heading + 4x2 Variant grid (8
                 SVG-icon drop buttons, one per orient x labelStyle x flip combo), then four
                 collapsible <details> settings sections (Line & arrows, Label, Witness
-                lines, Units) — COLLAPSED by default — plus a live toggle and Recalculate
-                button. No in-UI branding. The UI posts its content height (measured from
+                lines, Units) — COLLAPSED by default — plus a live toggle and two footer
+                buttons (Select all / Update selected Dims). No in-UI branding. The UI posts
+                its content height (measured from
                 the last element's offset — body can stretch to the iframe) on load and on
                 every section toggle; code calls figma.ui.resize so the window tracks it.
                 postMessage <-> code.
