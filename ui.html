@@ -6,7 +6,24 @@
     margin: 0; padding: 12px;
     color: var(--figma-color-text, #1e1e1e);
   }
-  h4 { margin: 14px 0 6px; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .6; }
+  /* Non-collapsible section heading (matches the collapsible summaries, minus the caret). */
+  .sectitle { margin: 0 0 6px; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .6; }
+
+  /* Collapsible section: <details class="sec"> with a <summary> styled like the old h4. */
+  .sec { margin: 0; }
+  .sec > summary {
+    list-style: none; cursor: pointer; user-select: none;
+    margin: 12px 0 6px; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .6;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .sec > summary::-webkit-details-marker { display: none; }
+  .sec > summary::before {
+    content: ""; width: 0; height: 0; flex: none;
+    border-left: 4px solid currentColor; border-top: 3px solid transparent; border-bottom: 3px solid transparent;
+    transition: transform .12s ease;
+  }
+  .sec[open] > summary::before { transform: rotate(90deg); }
+
   .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 4px; }
   .grid button {
     height: 46px; padding: 5px; cursor: pointer;
@@ -21,15 +38,19 @@
   }
   .grid button:active { background: var(--figma-color-bg-brand-tertiary, #e5f4ff); }
   .grid svg { width: 100%; height: 100%; display: block; }
-  .row { display: flex; align-items: center; justify-content: space-between; margin: 5px 0; }
+
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 5px 0; }
   .row label { flex: 1; }
-  .row input[type=number], .row select {
-    width: 96px; padding: 3px 6px; text-align: right;
-    border: 1px solid var(--figma-color-border, #d9d9d9);
+  .row input, .row select {
+    padding: 3px 6px; border: 1px solid var(--figma-color-border, #d9d9d9);
     border-radius: 4px; background: var(--figma-color-bg, #fff); color: inherit;
   }
-  .row select { text-align: left; }
-  #fontFamily { width: 150px; }
+  .row input { width: 64px; text-align: right; }
+  .row select { width: 120px; text-align: left; }
+  /* Scale is a text field (accepts "1/4") so it has no spinner. Reserve the same right
+     gutter the number spinners occupy so its value lines up with the other fields. */
+  #scale { padding-right: 22px; }
+
   .seg { display: flex; gap: 4px; margin: 6px 0 8px; }
   .seg button {
     flex: 1; height: 26px; cursor: pointer; font-size: 11px;
@@ -39,7 +60,6 @@
   .seg button.active {
     background: var(--figma-color-bg-brand, #0d99ff); color: #fff; border-color: transparent;
   }
-  .caption { font-size: 10px; opacity: .55; margin: 2px 0 0; line-height: 1.35; }
   .check { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
   .full { width: 100%; height: 30px; cursor: pointer; margin-top: 8px;
     border: 1px solid var(--figma-color-border, #d9d9d9); border-radius: 6px;
@@ -48,41 +68,49 @@
   hr { border: none; border-top: 1px solid var(--figma-color-border, #e6e6e6); margin: 12px 0; }
 </style>
 
-<h4>Drop a dimension</h4>
+<div class="sectitle">Drop a dimension</div>
 <div class="grid" id="variants"></div>
 
-<h4>Line &amp; arrows</h4>
-<div class="row"><label>Line weight (drives arrows)</label><input type="number" id="thickness" step="0.25" min="0.25"></div>
-<div class="row"><label>Arrow style</label>
-  <select id="arrowStyle">
-    <option value="ARROW_LINES">Line</option>
-    <option value="ARROW_EQUILATERAL">Triangle</option>
-    <option value="TRIANGLE_FILLED">Reversed</option>
-    <option value="CIRCLE_FILLED">Circle</option>
-    <option value="DIAMOND_FILLED">Diamond</option>
-  </select>
-</div>
+<details class="sec">
+  <summary>Line &amp; arrows</summary>
+  <div class="row"><label>Line weight</label><input type="number" id="thickness" step="0.25" min="0.25"></div>
+  <div class="row"><label>Arrow style</label>
+    <select id="arrowStyle">
+      <option value="ARROW_LINES">Line</option>
+      <option value="ARROW_EQUILATERAL">Triangle</option>
+      <option value="TRIANGLE_FILLED">Reversed</option>
+      <option value="CIRCLE_FILLED">Circle</option>
+      <option value="DIAMOND_FILLED">Diamond</option>
+    </select>
+  </div>
+</details>
 
-<h4>Label</h4>
-<div class="row"><label>Font</label><select id="fontFamily"></select></div>
-<div class="row"><label>Font size (px)</label><input type="number" id="fontSize" step="1" min="4"></div>
+<details class="sec">
+  <summary>Label</summary>
+  <div class="row"><label>Font</label><select id="fontFamily"></select></div>
+  <div class="row"><label>Font size (px)</label><input type="number" id="fontSize" step="1" min="4"></div>
+</details>
 
-<h4>Witness lines</h4>
-<div class="row"><label>Gap from feature (px)</label><input type="number" id="witnessGap" step="1" min="0"></div>
-<div class="row"><label>Overshoot past line (px)</label><input type="number" id="witnessOvershoot" step="1" min="0"></div>
+<details class="sec">
+  <summary>Witness lines</summary>
+  <div class="row"><label>Gap from feature (px)</label><input type="number" id="witnessGap" step="1" min="0"></div>
+  <div class="row"><label>Overshoot past line (px)</label><input type="number" id="witnessOvershoot" step="1" min="0"></div>
+</details>
 
-<h4>Units</h4>
-<div class="row"><label>DPI (Figma = 72)</label><input type="number" id="dpi" step="1" min="1"></div>
-<div class="row"><label>Scale (e.g. 1, 0.25, 1/4)</label><input type="text" id="scale" inputmode="text"></div>
-<div class="seg" id="unit">
-  <button data-u="in">in</button>
-  <button data-u="ft">ft</button>
-  <button data-u="mm">mm</button>
-  <button data-u="cm">cm</button>
-  <button data-u="m">m</button>
-</div>
-<div class="row"><label>Decimals</label><input type="number" id="decimals" step="1" min="0" max="4"></div>
-<div class="check"><input type="checkbox" id="showUnit"><label for="showUnit">Show unit in label</label></div>
+<details class="sec">
+  <summary>Units</summary>
+  <div class="row"><label>DPI (Figma = 72)</label><input type="number" id="dpi" step="1" min="1"></div>
+  <div class="row"><label>Scale (e.g. 1, 0.25, 1/4)</label><input type="text" id="scale" inputmode="text"></div>
+  <div class="seg" id="unit">
+    <button data-u="in">in</button>
+    <button data-u="ft">ft</button>
+    <button data-u="mm">mm</button>
+    <button data-u="cm">cm</button>
+    <button data-u="m">m</button>
+  </div>
+  <div class="row"><label>Decimals</label><input type="number" id="decimals" step="1" min="0" max="4"></div>
+  <div class="check"><input type="checkbox" id="showUnit"><label for="showUnit">Show unit in label</label></div>
+</details>
 
 <hr>
 <div class="check"><input type="checkbox" id="live"><label for="live">Live update while open</label></div>
@@ -183,6 +211,19 @@
   });
 
   el('recalc').onclick = () => parent.postMessage({ pluginMessage: { type: 'recalc' } }, '*');
+
+  // Resize the plugin window to fit the content, so collapsing sections actually shrinks it.
+  // Measure from the last element's layout offset (not body's box, which can stretch to the
+  // iframe height and never report the shorter content height).
+  function syncHeight() {
+    requestAnimationFrame(() => {
+      const last = el('recalc');
+      const h = Math.ceil(last.offsetTop + last.offsetHeight) + 12; // + body bottom padding
+      parent.postMessage({ pluginMessage: { type: 'resize', height: h } }, '*');
+    });
+  }
+  document.querySelectorAll('.sec').forEach((d) => d.addEventListener('toggle', syncHeight));
+  syncHeight();
 
   onmessage = (e) => {
     const msg = e.data.pluginMessage;

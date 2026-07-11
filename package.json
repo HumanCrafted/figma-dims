@@ -1,5 +1,5 @@
 {
-  "name": "dimension-tool",
+  "name": "figma-dims",
   "version": "0.1.0",
   "scripts": {
     "build": "tsc -p tsconfig.json",

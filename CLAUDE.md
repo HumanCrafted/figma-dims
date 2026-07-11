@@ -1,4 +1,4 @@
-# CLAUDE.md — Dimension Tool (Figma plugin)
+# CLAUDE.md — Dims (Figma plugin)
 
 Context for any session picking this up. Read this first; it captures the design
 decisions and the dead ends we already ruled out, so we don't re-litigate them.
@@ -155,17 +155,27 @@ label. A **Recalculate all** button does the same on demand.
 ## Files
 
 ```
-manifest.json   editorType: figma, documentAccess: dynamic-page,
+manifest.json   name "Dims". editorType: figma, documentAccess: dynamic-page,
                 networkAccess none, main: code.js, ui: ui.html.
                 id is a placeholder — fine for local dev, only matters at publish.
 code.ts         all plugin logic. Compiles to code.js (which Figma actually runs).
-ui.html         control panel: a 4x2 Variant grid (8 SVG-icon drop buttons, one per
-                orient x labelStyle x flip combo), option fields, live toggle,
-                Recalculate button. postMessage <-> code.
+ui.html         control panel: a fixed "Drop a dimension" heading + 4x2 Variant grid (8
+                SVG-icon drop buttons, one per orient x labelStyle x flip combo), then four
+                collapsible <details> settings sections (Line & arrows, Label, Witness
+                lines, Units) — COLLAPSED by default — plus a live toggle and Recalculate
+                button. No in-UI branding. The UI posts its content height (measured from
+                the last element's offset — body can stretch to the iframe) on load and on
+                every section toggle; code calls figma.ui.resize so the window tracks it.
+                postMessage <-> code.
+logo.svg        128x128 badge logo (dark rounded square + white dimension mark). This is the
+                PUBLISH icon source — the plugin window title-bar icon can ONLY be set at
+                publish time (uploaded on the publishing page); there is no manifest/API/CSS
+                way to set it for a local dev build, and the window frame isn't customizable.
 tsconfig.json   compiles code.ts. strict: true (flip to false as an escape hatch).
                 lib must NOT include DOM (collides with @figma/plugin-typings'
                 console/fetch globals — TS2451). See docs/auto-layout.md.
-package.json    devDeps: @figma/plugin-typings, typescript. scripts: build, watch.
+package.json    name "figma-dims". devDeps: @figma/plugin-typings, typescript.
+                scripts: build, watch.
 ```
 
 ## Build & run

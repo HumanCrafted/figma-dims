@@ -538,7 +538,10 @@ async function onDocChange(e) {
     }
 }
 // ---------- lifecycle ----------
-figma.showUI(__html__, { width: 264, height: 600, themeColors: true });
+const UI_WIDTH = 264;
+// Initial height ~= the all-collapsed content; the UI posts its exact height on load and
+// on every section toggle so the window tracks its content.
+figma.showUI(__html__, { width: UI_WIDTH, height: 360, themeColors: true });
 figma.ui.onmessage = async (msg) => {
     if (msg.type === 'create') {
         // The variant grid sends orient + style/flip together; fold them into settings (so they
@@ -559,6 +562,11 @@ figma.ui.onmessage = async (msg) => {
     }
     else if (msg.type === 'recalc') {
         await recalcAll();
+    }
+    else if (msg.type === 'resize') {
+        // UI reports its content height so the window shrinks/grows as sections collapse/expand.
+        const h = Math.max(80, Math.min(1000, Math.round(msg.height || 0)));
+        figma.ui.resize(UI_WIDTH, h);
     }
 };
 (async function init() {
