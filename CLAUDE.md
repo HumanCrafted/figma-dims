@@ -6,8 +6,8 @@ decisions and the dead ends we already ruled out, so we don't re-litigate them.
 **Status:** **v2 — runtime-verified in Figma.** Both orientations build, stretch, and
 recompute correctly. Architecture moved from per-child *constraints* (v1) to
 **auto-layout Fill/Hug/Fixed** (v2) — see [docs/auto-layout.md](docs/auto-layout.md) for
-the full node tree and the three hard-won gotchas. Open cosmetic items: confirm the
-`Reversed` arrow enum mapping on a render; eyeball the vertical label standoff.
+the full node tree and the three hard-won gotchas. Arrow mappings and both label-tighten
+heuristics are runtime-confirmed.
 
 ---
 
@@ -182,8 +182,8 @@ compile. Runtime errors surface in Plugins → Development → Show/Hide console
   `PAD_BOTTOM` = 4 (H bottom padding).
 - `TEXT_TIGHTEN_H` = 0.7 (H label wrapper height as a fraction of font size — text spills
   down toward the line), `TEXT_TIGHTEN_V` = 0.4 (V: wrapper narrower than the text by this
-  fraction — text spills left toward the line). Both are starting heuristics; the V case
-  especially may want a fuller calc.
+  fraction — text spills left toward the line). Both are runtime-confirmed to look right;
+  simple font-relative heuristics, tunable if the look should change.
 - `Settings`: `thickness`, `arrowStyle`, `fontFamily`, `fontSize`, `witnessGap`,
   `witnessOvershoot`, `dpi`, `unit`, `scale`, `decimals`, `showUnit`, `live`. Units use a
   DPI field + unit toggle (in/ft/mm/cm/m) via `PER_INCH`; `scale` is a text field that
@@ -191,8 +191,6 @@ compile. Runtime errors surface in Plugins → Development → Show/Hide console
 
 ## Open threads / next candidates
 
-- **Confirm `Reversed` arrow mapping** — `TRIANGLE_FILLED` is a guess; verify on a render.
-- **Vertical label standoff** — `TEXT_TIGHTEN_V` (0.4) is a first pass; eyeball and tune.
 - **Rounded extension ends** — currently Line-style only; other styles may want it.
 - **Color control** — currently the `COLOR` constant; promote to the UI. (Jon flagged
   this as the likely next add.)

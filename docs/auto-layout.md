@@ -84,8 +84,7 @@ Native `StrokeCap` enum (typings v1.130.0) — 5 exposed in the UI as **single w
 | Diamond | `DIAMOND_FILLED` |
 
 The API also has `NONE`/`ROUND`/`SQUARE` (not offered — not dimension arrowheads).
-**Unverified:** the `Reversed` → `TRIANGLE_FILLED` mapping is a best guess; two enum
-values are triangles. Confirm against a render and swap with `ARROW_EQUILATERAL` if wrong.
+All five mappings are **runtime-confirmed** (incl. `Reversed` → `TRIANGLE_FILLED`).
 
 **Rounded extension ends (Line style only):** when `arrowStyle === 'ARROW_LINES'`, the
 witness bars get `strokeCap = 'ROUND'` (else `'NONE'`) to match Figma's native Line-arrow
