@@ -10,8 +10,10 @@ mechanical drawings who wants proper dimension callouts.
 ## Features
 
 - **Real-world units** — in, ft, mm, cm, m, with a configurable DPI and drawing scale.
-- **Native resize** — each dimension is an auto-layout frame, so Figma stretches it in
-  both axes when you drag. The label recomputes automatically.
+- **Figma native** — every dimension is built from standard Figma vectors and frames,
+  no custom rendering. Each one is an auto-layout frame, so Figma stretches it in both
+  axes when you drag and the label recomputes automatically. Lines and witnesses stay
+  editable by hand like any other vector.
 - **8 variants** — horizontal / vertical × standard / inline label × flip, from a grid
   of one-click drop buttons.
 - **Adjustable styling** — arrow styles (line, triangle, reversed, circle, diamond),
@@ -38,7 +40,9 @@ last plugin). Re-run after each recompile — Figma doesn't hot-reload.
 2. Set your units, scale, and styling (sections are collapsible).
 3. Click a variant button to drop a dimension.
 4. Resize the dimension frame to fit your feature — the value updates automatically.
+5. To restyle existing dimensions, adjust the settings, click **Select all** (or select
+   dims manually), then click **Update selected Dims** to re-apply the current settings.
 
 ## License
 
-See repository for license details.
+MIT © Human Crafted, LLC. See [LICENSE](LICENSE) for details.
