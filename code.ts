@@ -465,11 +465,13 @@ function assembleStandard(root: FrameNode, orient: 'H' | 'V', flip: boolean, s: 
 async function assembleInline(root: FrameNode, orient: 'H' | 'V', flip: boolean, s: Settings, label: TextNode) {
   const roundEnds = s.arrowStyle === 'ARROW_LINES';
   const gap = Math.max(3, Math.round(s.fontSize * 0.35)); // clear space between line ends and text
+  // The inline band's cross-thickness is the label's SHORT dimension (height) in BOTH
+  // orientations — for H it's the band height, for V the band width. Using it (not the label
+  // width) is what keeps the witness-crossing a small stub instead of a text-wide line.
   const textH = Math.max(label.height, 1);
-  const textW = Math.max(label.width, 1);
   // The band's near half already provides part of the overshoot; the stub tops it up so the
   // total overshoot past the line stays ~= witnessOvershoot (consistent with the standard).
-  const stub = Math.max(s.witnessOvershoot - (orient === 'H' ? textH : textW) / 2, 1);
+  const stub = Math.max(s.witnessOvershoot - textH / 2, 1);
 
   const textWrap = figma.createFrame();
   textWrap.name = 'Text';
@@ -512,7 +514,7 @@ async function assembleInline(root: FrameNode, orient: 'H' | 'V', flip: boolean,
   } else {
     textWrap.paddingTop = textWrap.paddingBottom = gap;
     featurePad(root, 'V', flip, s.witnessGap);
-    root.resize(stub + textW + INSIDE + s.witnessGap, LEN);
+    root.resize(stub + textH + INSIDE + s.witnessGap, LEN);
   }
 
   // Feature (growing inside band) side must match standard: H feature bottom / V feature
@@ -555,8 +557,12 @@ async function assembleInline(root: FrameNode, orient: 'H' | 'V', flip: boolean,
     wB.layoutSizingHorizontal = 'FILL';
     segA.layoutSizingVertical = 'FILL';
     segB.layoutSizingVertical = 'FILL';
-    textWrap.layoutSizingHorizontal = 'HUG';
-    textWrap.layoutSizingVertical = 'HUG';
+    // Pin the text container width to textH (the band's cross-thickness), NOT the label width.
+    // HUG here would size to the label's WIDTH — the perpendicular axis for a vertical dim —
+    // ballooning the band and its witness-crossing. The label overflows this narrow box,
+    // centered on the line (clipsContent is off), which reads as a number straddling the line.
+    textWrap.resize(Math.max(textH, 1), Math.max(textWrap.height, 1));
+    textWrap.layoutSizingVertical = 'HUG'; // keep fixed width, re-hug height
 
     inside.layoutSizingHorizontal = 'FILL';
     inside.layoutSizingVertical = 'FILL';
@@ -572,7 +578,7 @@ async function assembleInline(root: FrameNode, orient: 'H' | 'V', flip: boolean,
     band.layoutSizingHorizontal = 'FILL';
     band.layoutSizingVertical = 'HUG';
   } else {
-    band.resize(Math.max(textW, 1), 10);
+    band.resize(Math.max(textH, 1), 10);
     band.layoutSizingVertical = 'FILL';
     band.layoutSizingHorizontal = 'HUG';
   }

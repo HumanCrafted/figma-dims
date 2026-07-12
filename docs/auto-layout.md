@@ -82,7 +82,7 @@ The middle band becomes a row/column
 |---|---|---|---|---|
 | `witness` ×2 | `witness` | FIXED (0) | FILL | crossing witness at each extremity — keeps the witness line continuous **through** the band |
 | `segA` / `segB` | `line` | FILL | (0) | the two dim-line pieces; arrow on the **outer** end only |
-| `Text` (frame) | `text` | HUG | HUG | centered on the line, `gap` padding on the near sides so the segments don't touch the glyphs |
+| `Text` (frame) | `text` | H: HUG · **V: FIXED = `textH`** | HUG | centered on the line, `gap` padding on the near sides; see the cross-thickness note below |
 
 Around this band sit the same **fixed outside-overshoot stub** and **growing inside band**
 as standard. Their order is **orientation-specific** (like `assembleStandard`): H natural =
@@ -98,23 +98,34 @@ segB=right/bottom outer). **Runtime-confirmed** by prototyping this exact band i
 file via `use_figma`: after FILL-stretch the two segments split to 101.5px each (matching
 Jon's reference), the arrows land on the outer ends, and the inner ends stay clean.
 
+**Band cross-thickness = the label's SHORT dimension (`textH`), in both orientations.** The
+crossing witness spans the band's cross axis, so that axis must stay small and stable. In H
+the text's height is naturally the cross axis, so the Text frame just HUGs. In V the cross
+axis is horizontal — HUG would size it to the label's **width** (the perpendicular axis for a
+vertical dim), so a longer number would stretch the witness-crossing (and eat the overshoot
+stub via the `textCross/2` term). Fix: in V the Text frame is pinned to a **fixed width =
+`textH`**; the label overflows it, centered on the line (a number straddling the line). This
+makes the V frame width independent of the label text — runtime-confirmed via `use_figma`
+(at one font size "3.3 in" and "100.0 in" both yield the same frame width; the
+witness-crossing becomes `textH` instead of the full label width).
+
 **Overshoot bookkeeping.** The inline band's near half already provides part of the
-overshoot, so the stub is `max(witnessOvershoot - textCross/2, 1)` to keep total overshoot
-past the line ≈ `witnessOvershoot` (matches Jon's hand-built stub of ~2px).
+overshoot, so the stub is `max(witnessOvershoot - textH/2, 1)` — `textH` is the band's
+cross-thickness in both orientations (see above) — keeping total overshoot past the line ≈
+`witnessOvershoot`.
 
 **Settle (gotcha #2) applies to the inline band too** — it's a nested Fill frame, so after
 the tree is assembled it gets the same resize-then-refill treatment (`FILL` on the length
 axis, `HUG` on the cross axis) as the extension bands.
 
-Reference frame: `Dimension (H) - Inline`. (V-inline is the symmetric extrapolation —
-vertical band, horizontal crossing witnesses, upright centered label — not drawn in the
-doc but built by the same code path.)
+Reference frame: `Dimension (H) - Inline`. V-inline is the symmetric case — vertical band,
+horizontal crossing witnesses, upright label straddling the line — and its cross-thickness
+fix (above) is runtime-confirmed.
 
-> **Runtime status:** the one genuinely new primitive — **per-vertex `strokeCap` under
-> Fill-stretch** — is runtime-confirmed via a `use_figma` prototype (outer-end arrows,
-> clean inner ends, even 101.5px split). `flip` and the surrounding inline assembly reuse
-> the already-verified sizing machinery. Still worth an end-to-end eyeball of all 8 combos
-> dropped from the actual plugin (esp. V-inline, which is the symmetric extrapolation).
+> **Runtime status:** the new primitive — **per-vertex `strokeCap` under Fill-stretch** — is
+> runtime-confirmed via `use_figma` (outer-end arrows, clean inner ends, even 101.5px split),
+> as is the **V-inline cross-thickness fix** (frame width independent of label text). `flip`
+> and the rest of the inline assembly reuse the already-verified sizing machinery.
 
 ---
 
