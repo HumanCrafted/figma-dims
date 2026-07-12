@@ -1,4 +1,4 @@
-# Dims
+# Dims.
 
 A CAD-style dimension annotation tool for Figma. Drop well-formatted dimension
 callouts — line, arrows, witness/extension lines, and a value label — that read like
